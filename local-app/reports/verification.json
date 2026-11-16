@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-15",
+  "unit_integration_tests": 22,
+  "unit_integration_passed": 22,
+  "browser_e2e": "passed",
+  "browser_errors": 0,
+  "demo_dataset_total": 44,
+  "held_out_demo_cases": 34,
+  "real_oauth_account_tested": false,
+  "docker_build_tested": false,
+  "semantic_weights_downloaded": false
+}
