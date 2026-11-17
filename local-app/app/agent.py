@@ -86,19 +86,18 @@ def run_review(store,oauth,id):
             'documents':[{'id':d['id'],'role':d['role'],'name':d['name'],'sha256':d['sha256']} for d in kit.docs.values()],
             'contract_outline':kit.contract['clauses']},ensure_ascii=False)}]
         invoked={log['tool'] for log in store.logs(id)}
-        if t['request']['mode']=='gigachat' and not t['history']:
-            # Supply deterministic evidence before asking the model for a decision.
+        if t['request']['mode']=='gigachat':
+            draft=demo_result(kit)
             for name in ('check_numbers','lookup_supplier'):
-                out=kit.call(name,{})
-                store.log(id,name,{},out)
-                invoked.add(name)
-            draft=demo_result(kit).model_dump()
-            draft['summary']='Предварительная проверка чисел и реквизитов.'
-            history.append({'role':'user','content':json.dumps({
-                'task':'Проверки чисел и ИНН уже выполнены сервером. Проверь черновик и основания. Сохраняй точные цитаты и id. При достаточных данных вызови finish_review сразу.',
-                'draft':draft,
-                'references':[{'document_id':d['id'],'role':d['role'],'clauses':d['clauses'][:12]} for d in [kit.template,kit.policy]],
-            },ensure_ascii=False)})
+                store.log(id,name,{},kit.call(name,{}))
+            result,used=oauth.review(kit,draft,t['request']['model'],t['request']['max_tokens'])
+            result=ReviewResult.model_validate(result.model_dump())
+            checked=validate_result(result,kit.docs,kit.contract)
+            if not checked['valid']:raise ValueError('; '.join(checked['errors']))
+            store.log(id,'gigachat_review',{'model':t['request']['model']},{'findings':len(result.findings)},tokens=used)
+            t.update(result=result.model_dump(),status='completed',steps=1,tokens=used,revision=t['revision']+1)
+            store.update(t)
+            return
         while t['steps']<t['request']['max_steps']:
             if time.monotonic()-started>600:raise ValueError('Истёк лимит времени проверки')
             if t['tokens']+len(json.dumps(history))//3>t['request']['max_tokens']:
