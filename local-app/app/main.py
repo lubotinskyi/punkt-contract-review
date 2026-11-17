@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from docx import Document
 from .storage import Store
-from .oauth import OAuth
+from .giga import GigaChat
 from .documents import parse_document, validate_result
 from .documents import SEMANTIC_MODEL
 from .models import StartReview, Decisions, ReviewResult, Revision
@@ -19,7 +19,7 @@ ROOT=Path(__file__).resolve().parent.parent
 
 def create_app(data_dir=None,oauth_client=None):
     app=FastAPI(title='Пункт — проверка договоров',docs_url=None,redoc_url=None)
-    store=Store(data_dir);oauth=OAuth(store.root,int(os.environ.get('PORT','8000')),oauth_client)
+    store=Store(data_dir);oauth=GigaChat(store.root,oauth_client)
     csrf=secrets.token_urlsafe(40)
     app.state.store=store;app.state.oauth=oauth;app.state.csrf=csrf
 
@@ -45,19 +45,7 @@ def create_app(data_dir=None,oauth_client=None):
     app.mount('/static',StaticFiles(directory=ROOT/'web'),name='static')
 
     @app.get('/api/bootstrap')
-    def bootstrap():return {'csrf':csrf,'oauth':oauth.status(),'retrieval':('Локальный семантический поиск + TF-IDF: '+SEMANTIC_MODEL) if SEMANTIC_MODEL else 'Локальный поиск по символьным TF-IDF векторам (без нейросетевой модели)','version':'1.0.0'}
-
-    @app.post('/api/oauth/start')
-    def login():return {'url':oauth.begin()}
-
-    @app.get('/auth/callback')
-    def callback(request:Request):
-        try:oauth.finish(dict(request.query_params));message='Вход завершён. Вернитесь в приложение и обновите каталог моделей.'
-        except Exception:message='Вход не завершён. Проверьте доступность использования плана ChatGPT и повторите попытку в приложении.'
-        return HTMLResponse('<html lang="ru"><meta charset="utf-8"><title>Вход ChatGPT</title><h1>'+message+'</h1><a href="/">Вернуться к проверке договоров</a></html>')
-
-    @app.post('/api/oauth/logout')
-    def logout():return {'revoked':oauth.logout()}
+    def bootstrap():return {'csrf':csrf,'gigachat':{'configured':oauth.configured()},'retrieval':('Локальный семантический поиск + TF-IDF: '+SEMANTIC_MODEL) if SEMANTIC_MODEL else 'Локальный поиск по символьным TF-IDF векторам (без нейросетевой модели)','version':'1.0.0'}
 
     @app.get('/api/models')
     def models():return oauth.models()
@@ -96,7 +84,7 @@ def create_app(data_dir=None,oauth_client=None):
         r=body.model_dump()
         for key,role in [('contract_id','contract'),('template_id','template'),('policy_id','policy'),('specification_id','specification'),('supplier_id','suppliers')]:
             if r.get(key) and store.document(r[key])['role']!=role:raise ValueError('Неверная роль документа: '+role)
-        if body.mode=='oauth':
+        if body.mode=='gigachat':
             if body.model not in {m['id'] for m in oauth.models()}:raise ValueError('Выберите доступную модель')
         t=store.create(r)
         threading.Thread(target=run_review,args=(store,oauth,t['id']),daemon=True).start()
@@ -105,6 +93,7 @@ def create_app(data_dir=None,oauth_client=None):
     @app.post('/api/tasks/{id}/resume')
     def resume(id:str):
         t=store.task(id)
+        if t['request']['mode']=='oauth':raise ValueError('Создайте новую проверку с GigaChat')
         if t['status'] not in {'interrupted','failed'}:raise ValueError('Эту проверку нельзя продолжить')
         if t['steps']>=t['request']['max_steps'] or t['tokens']>=t['request']['max_tokens']:
             raise ValueError('Лимит исчерпан. Создайте новую проверку с большим бюджетом.')
@@ -141,7 +130,7 @@ def create_app(data_dir=None,oauth_client=None):
             return Response(json.dumps(payload,ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':'attachment; filename="review.json"'})
         if format!='docx':raise ValueError('Неизвестный формат')
         d=Document();d.add_heading('Протокол разногласий',0)
-        d.add_paragraph(t['request']['title']);d.add_paragraph('Режим: '+('демонстрационный без LLM' if t['request']['mode']=='demo' else 'LLM с OAuth'))
+        d.add_paragraph(t['request']['title']);d.add_paragraph('Режим: '+('демонстрационный без LLM' if t['request']['mode']=='demo' else ('GigaChat' if t['request']['mode']=='gigachat' else 'ChatGPT OAuth')))
         d.add_paragraph(t['result']['summary'])
         for f in t['result']['findings']:
             if f['decision']!='accepted':continue

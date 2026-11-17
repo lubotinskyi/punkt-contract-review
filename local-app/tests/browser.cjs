@@ -4,8 +4,8 @@ const path=require('path');
  const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||undefined,headless:true});
  const page=await browser.newPage({viewport:{width:1440,height:1000}});
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto('http://127.0.0.1:8000');await page.waitForFunction(()=>document.querySelector('#account').textContent==='ChatGPT не подключён');
- if(await page.locator('#logout').isVisible())throw new Error('Logout should be hidden when disconnected');
+ await page.goto('http://127.0.0.1:8000');await page.waitForFunction(()=>document.querySelector('#account').textContent.includes('GigaChat'));
+ 
  await page.screenshot({path:path.join(__dirname,'../reports/home-desktop.png'),fullPage:true});
  await page.click('#examples');await page.waitForFunction(()=>document.querySelector('#mode').value==='demo');
  await page.click('#reviewform button[type=submit]');

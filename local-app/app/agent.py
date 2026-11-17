@@ -86,6 +86,19 @@ def run_review(store,oauth,id):
             'documents':[{'id':d['id'],'role':d['role'],'name':d['name'],'sha256':d['sha256']} for d in kit.docs.values()],
             'contract_outline':kit.contract['clauses']},ensure_ascii=False)}]
         invoked={log['tool'] for log in store.logs(id)}
+        if t['request']['mode']=='gigachat' and not t['history']:
+            # Supply deterministic evidence before asking the model for a decision.
+            for name in ('check_numbers','lookup_supplier'):
+                out=kit.call(name,{})
+                store.log(id,name,{},out)
+                invoked.add(name)
+            draft=demo_result(kit).model_dump()
+            draft['summary']='Предварительная проверка чисел и реквизитов.'
+            history.append({'role':'user','content':json.dumps({
+                'task':'Проверки чисел и ИНН уже выполнены сервером. Проверь черновик и основания. Сохраняй точные цитаты и id. При достаточных данных вызови finish_review сразу.',
+                'draft':draft,
+                'references':[{'document_id':d['id'],'role':d['role'],'clauses':d['clauses'][:12]} for d in [kit.template,kit.policy]],
+            },ensure_ascii=False)})
         while t['steps']<t['request']['max_steps']:
             if time.monotonic()-started>600:raise ValueError('Истёк лимит времени проверки')
             if t['tokens']+len(json.dumps(history))//3>t['request']['max_tokens']:

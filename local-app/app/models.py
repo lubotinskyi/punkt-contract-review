@@ -38,7 +38,7 @@ class StartReview(BaseModel):
     specification_id: str | None = None
     supplier_id: str | None = None
     model: str = Field(default='', max_length=120)
-    mode: Literal['oauth', 'demo'] = 'oauth'
+    mode: Literal['gigachat', 'demo'] = 'gigachat'
     max_steps: int = Field(default=18, ge=2, le=40)
     max_tokens: int = Field(default=65000, ge=5000, le=250000)
 

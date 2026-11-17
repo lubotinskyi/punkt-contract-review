@@ -7,7 +7,7 @@ from app.storage import Store
 from app.documents import parse_document,validate_result
 from app.models import ReviewResult
 from app.agent import Toolkit,run_review
-from app.oauth import OAuth
+from app.giga import GigaChat
 
 ROOT=Path(__file__).resolve().parent
 
@@ -44,7 +44,7 @@ def evaluate(mode='demo',model='',split='test'):
     reports=ROOT/'reports';reports.mkdir(exist_ok=True)
     results=[];failures=[];tp=fp=fn=correct_categories=0
     # Live credentials are read only for an explicitly selected OAuth evaluation.
-    auth=OAuth(ROOT/'data') if mode=='oauth' else None
+    auth=GigaChat(ROOT/'data') if mode=='gigachat' else None
     with tempfile.TemporaryDirectory(prefix='review-eval-') as tmp:
         store=Store(tmp);ids={}
         for e in json.loads((ROOT/'examples/manifest.json').read_text(encoding='utf-8')):
@@ -79,6 +79,6 @@ def evaluate(mode='demo',model='',split='test'):
     print(json.dumps(summary,ensure_ascii=False))
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--mode',choices=['demo','oauth'],default='demo');parser.add_argument('--model',default='');parser.add_argument('--split',choices=['dev','test'],default='test');args=parser.parse_args()
-    if args.mode=='oauth' and not args.model:parser.error('--model обязателен для OAuth')
+    parser=argparse.ArgumentParser();parser.add_argument('--mode',choices=['demo','gigachat'],default='demo');parser.add_argument('--model',default='');parser.add_argument('--split',choices=['dev','test'],default='test');args=parser.parse_args()
+    if args.mode=='gigachat' and not args.model:parser.error('--model обязателен для OAuth')
     evaluate(args.mode,args.model,args.split)
