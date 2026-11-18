@@ -12,7 +12,7 @@ const path=require('path');
  await page.waitForFunction(()=>document.querySelectorAll('.finding').length===5,{timeout:20000});
  if(await page.locator('#resume').isVisible())throw new Error('Resume should be hidden for completed tasks');
  const title=await page.locator('#reviewbadge').innerText();if(!title.includes('БЕЗ LLM'))throw new Error('Demo is not labelled');
- const selects=page.locator('.finding > select:last-child');for(let i=0;i<await selects.count();i++)await selects.nth(i).selectOption('accepted');
+ const selects=page.locator('.finding select[aria-label="Решение юриста"]');for(let i=0;i<await selects.count();i++)await selects.nth(i).selectOption('accepted');
  await page.click('#save');await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('Правки сохранены'));
  page.once('dialog',d=>d.accept());await page.click('#approve');await page.waitForFunction(()=>!document.querySelector('#docx').classList.contains('disabled'));
  const downloadResponse=await page.request.get('http://127.0.0.1:8000'+await page.locator('#docx').getAttribute('href'));if(downloadResponse.status()!==200)throw new Error('DOCX export failed');
