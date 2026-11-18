@@ -54,20 +54,57 @@ async function display(t){return {...t,approved:await approved(t)};}
 const locks=new Map();async function locked(id,fn){const prior=locks.get(id)||Promise.resolve();const current=prior.catch(()=>{}).then(fn);locks.set(id,current);try{return await current;}finally{if(locks.get(id)===current)locks.delete(id);}}
 async function localApi(url,options={}){
  const method=options.method||'GET',b=typeof options.body==='string'?JSON.parse(options.body):options.body;
- if(url==='/api/bootstrap')return {csrf:'browser-local',oauth:{connected:false},retrieval:'Веб-версия: формализованные проверки без LLM. Документы и история сохраняются только в этом браузере.'};
+ if(url==='/api/bootstrap')return {csrf:'browser-local',oauth:{connected:false},retrieval:'История сохраняется в этом браузере. В режиме GigaChat выбранные документы передаются Сберу.'};
  if(url==='/api/models'||url.startsWith('/api/oauth'))fail('Веб-версия работает без LLM. OAuth и выбор модели доступны в локальном приложении.');
  if(url==='/api/documents'){if(method==='GET')return all('documents');const d=await parseFile(b.get('file'),b.get('role'));await put('documents',d);return d;}
  if(url.startsWith('/api/documents/'))return await get('documents',url.split('/').pop())||fail('Документ не найден');
- if(url==='/api/examples'){const manifest=await fetch('/static/examples.json').then(r=>r.json());const existing=await all('documents');for(const x of manifest){if(existing.some(d=>d.name===x.name&&d.role===x.role))continue;const d=await parseFile(new File([x.text],x.name,{type:'text/plain'}),x.role);await put('documents',d);}return {ok:true};}
+ if (url === '/api/examples') {
+  const samples = await fetch('/static/examples.json').then(response => response.json());
+  const documents = await all('documents');
+  const selected = {};
+  for (const sample of samples) {
+   const parsed = await parseFile(new File([sample.text], sample.name), sample.role);
+   const prior = documents.find(doc => doc.role === parsed.role && doc.sha256 === parsed.sha256);
+   if (!prior) await put('documents', parsed);
+   selected[parsed.role] = (prior || parsed).id;
+  }
+  return {ok: true, selected};
+ }
  if(url==='/api/tasks'){
   if(method==='GET')return (await all('tasks')).sort((a,b)=>b.created.localeCompare(a.created));
-  if(b.mode!=='demo')fail('Для веб-версии выберите демонстрационный режим без LLM');checkedText(b.title,1,160,'название проверки');
+  if(!['gigachat','demo'].includes(b.mode))fail('Неизвестный режим');checkedText(b.title,1,160,'название проверки');
   for(const [key,role] of [['contract_id','contract'],['template_id','template'],['policy_id','policy'],['specification_id','specification'],['supplier_id','suppliers']]){if(!b[key]){if(['contract','template','policy'].includes(role))fail('Выберите обязательные документы');continue;}const d=await get('documents',b[key]);if(!d||d.role!==role)fail('Некорректный тип документа');}
   const t={id:uid(),request:b,created:now(),status:'completed',steps:0,tokens:0,revision:1,approval:null,lawyer_note:'',logs:[]};const docs=await loadTaskDocuments(t),contract=docs[b.contract_id],checks=numeric(contract,docs[b.policy_id],docs[b.specification_id]),s=supplier(contract,docs[b.supplier_id]);
   const findings=checks.filter(c=>c.status==='mismatch').map(c=>({id:c.field,title:c.label+': отклонение',category:c.category,explanation:`В договоре ${c.observed[0].value}, в основании ${c.limits[0].value}. Проверьте условия применения.`,contract:c.observed[0].source,evidence:[c.limits[0].source],suggestion:'Уточнить условие по приведённому основанию.',decision:'pending'}));
   if(['missing','invalid'].includes(s.status))findings.push({id:'supplier',title:'Проверка поставщика',category:'нужны данные',explanation:s.reason,contract:s.source,evidence:[],suggestion:'Проверить реквизиты вручную.',decision:'pending'});
   t.result={summary:'Демонстрационный режим: формализованные проверки без вызова LLM.',findings,reviewed_clause_ids:[],limitations:['Смысловая проверка, поиск пропущенных условий, неустойки и событий начала срока не выполнены.','Числа распознаются только для явно подписанных полей. Таблицы DOCX читаются как текст; автоматический расчёт строк спецификации не выполняется.',...checks.filter(c=>c.status==='unresolved').map(c=>c.label+': '+c.reason),...(s.status==='unresolved'?['Поставщик: '+s.reason]:[])]};
-  validate(findings,docs,contract);t.logs=[{at:now(),tool:'check_numbers',result:checks},{at:now(),tool:'lookup_supplier',result:s}];await put('tasks',t);return {id:t.id};
+  const initialFindings = structuredClone(findings);
+  if (b.mode === 'gigachat') {
+   try {
+   const response = await fetch('/api/gigachat/review', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({documents:Object.values(docs).map(({id,role,clauses})=>({id,role,clauses:clauses.map(({id,text})=>({id,text}))}))})});
+   const data = await response.json();
+   if (!response.ok) fail(data.detail || 'Ошибка сервиса GigaChat');
+   const reference = (doc, id) => {
+    const clause=doc?.clauses.find(c=>c.id===id);
+    if(!clause)fail('Модель сослалась на отсутствующий пункт. Требуется ручная проверка.');
+    return citation(doc,clause);
+   };
+   for(const f of data.answer.additional) {
+    findings.push({id:uid(), title:f.title,category:f.category,explanation:f.explanation,suggestion:f.suggestion,
+     decision:'pending',contract:reference(contract,f.clause),evidence:[reference(docs[f.source],f.basis)]});
+   }
+   t.tokens=data.tokens;t.steps=1;t.result.summary=data.answer.summary;
+   t.result.limitations=t.result.limitations.slice(1);
+   t.result.limitations.unshift('Смысловые замечания GigaChat и их основания требуют проверки юристом.');
+   validate(findings,docs,contract);
+   } catch(error) {
+    t.result.findings=initialFindings;
+    t.result.summary='Сохранены только результаты локальных правил.';
+    t.result.limitations.unshift('Заключение GigaChat отсутствует. '+error.message);
+   }
+  }
+  validate(t.result.findings,docs,contract);t.logs=[{at:now(),tool:'check_numbers',result:checks},{at:now(),tool:'lookup_supplier',result:s}];await put('tasks',t);return {id:t.id};
  }
  const m=url.match(/^\/api\/tasks\/([^/]+)(?:\/(.+))?$/);if(!m)fail('Неизвестная операция');const [,id,action]=m;
  return locked(id,async()=>{const t=await get('tasks',id);if(!t)fail('Проверка не найдена');if(!action)return display(t);if(action==='logs')return t.logs;
@@ -80,4 +117,4 @@ async function localApi(url,options={}){
 function escapeXml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function crc32(bytes){let c=0xffffffff;for(const b of bytes){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0);}return (c^0xffffffff)>>>0;}
 function zipStored(files){const chunks=[],central=[];let offset=0,count=0;for(const [name,text] of Object.entries(files)){const n=enc.encode(name),data=enc.encode(text),crc=crc32(data),header=new Uint8Array(30+n.length),h=new DataView(header.buffer);h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint32(14,crc,true);h.setUint32(18,data.length,true);h.setUint32(22,data.length,true);h.setUint16(26,n.length,true);header.set(n,30);const cent=new Uint8Array(46+n.length),v=new DataView(cent.buffer);v.setUint32(0,0x02014b50,true);v.setUint16(4,20,true);v.setUint16(6,20,true);v.setUint32(16,crc,true);v.setUint32(20,data.length,true);v.setUint32(24,data.length,true);v.setUint16(28,n.length,true);v.setUint32(42,offset,true);cent.set(n,46);chunks.push(header,data);central.push(cent);offset+=header.length+data.length;count++;}const len=central.reduce((n,a)=>n+a.length,0),end=new Uint8Array(22),v=new DataView(end.buffer);v.setUint32(0,0x06054b50,true);v.setUint16(8,count,true);v.setUint16(10,count,true);v.setUint32(12,len,true);v.setUint32(16,offset,true);return new Blob([...chunks,...central,end],{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});}
-async function exportReview(id,format){const t=await get('tasks',id);if(!t||!await approved(t))fail('Сначала подтвердите актуальную версию');if(format==='json')return new Blob([JSON.stringify({title:t.request.title,mode:'demo',result:t.result,lawyer_note:t.lawyer_note,approval:t.approval},null,2)],{type:'application/json'});const docs=await loadTaskDocuments(t),lines=['Протокол разногласий',t.request.title,'Режим: демонстрационный без LLM',t.result.summary];for(const f of t.result.findings.filter(f=>f.decision==='accepted')){lines.push(f.title,'Категория: '+f.category,'Пункт '+f.contract.clause_id+': '+f.contract.quote,f.explanation,...f.evidence.map(c=>'Основание: '+docs[c.document_id].name+', '+c.clause_id+' — '+c.quote),'Предложение: '+f.suggestion);}lines.push('Ограничения проверки',...t.result.limitations,'Комментарий юриста: '+t.lawyer_note,'Версия '+t.revision+' / '+t.approval.at);const body=lines.map(s=>'<w:p><w:r><w:t xml:space="preserve">'+escapeXml(s)+'</w:t></w:r></w:p>').join('');return zipStored({'[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>','_rels/.rels':'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>','word/document.xml':'<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'+body+'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body></w:document>'});}
+async function exportReview(id,format){const t=await get('tasks',id);if(!t||!await approved(t))fail('Сначала подтвердите актуальную версию');if(format==='json')return new Blob([JSON.stringify({title:t.request.title,mode:t.request.mode,result:t.result,lawyer_note:t.lawyer_note,approval:t.approval},null,2)],{type:'application/json'});const docs=await loadTaskDocuments(t),lines=['Протокол разногласий',t.request.title,t.request.mode==='gigachat'?'Режим: запрос GigaChat':'Режим: демонстрационный без LLM',t.result.summary];for(const f of t.result.findings.filter(f=>f.decision==='accepted')){lines.push(f.title,'Категория: '+f.category,'Пункт '+f.contract.clause_id+': '+f.contract.quote,f.explanation,...f.evidence.map(c=>'Основание: '+docs[c.document_id].name+', '+c.clause_id+' — '+c.quote),'Предложение: '+f.suggestion);}lines.push('Ограничения проверки',...t.result.limitations,'Комментарий юриста: '+t.lawyer_note,'Версия '+t.revision+' / '+t.approval.at);const body=lines.map(s=>'<w:p><w:r><w:t xml:space="preserve">'+escapeXml(s)+'</w:t></w:r></w:p>').join('');return zipStored({'[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>','_rels/.rels':'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>','word/document.xml':'<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'+body+'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body></w:document>'});}

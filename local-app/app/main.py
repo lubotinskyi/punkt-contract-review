@@ -66,11 +66,14 @@ def create_app(data_dir=None,oauth_client=None):
     @app.post('/api/examples')
     def examples():
         manifest=json.loads((ROOT/'examples/manifest.json').read_text(encoding='utf-8'))
-        existing={(d['name'],d['role']):d['id'] for d in store.documents()}
+        existing = {(d['role'], d['sha256']): d for d in store.documents()}
+        selected = {}
         for entry in manifest:
-            p=ROOT/'examples'/entry['file']
-            if (p.name,entry['role']) not in existing:store.put_document(parse_document(p.name,p.read_bytes(),entry['role']))
-        return {'ok':True}
+            path = ROOT / 'examples' / entry['file']
+            sample = parse_document(path.name, path.read_bytes(), entry['role'])
+            document = existing.get((sample['role'], sample['sha256'])) or store.put_document(sample)
+            selected[sample['role']] = document['id']
+        return {'ok': True, 'selected': selected}
 
     @app.get('/api/tasks')
     def tasks():return [{k:t[k] for k in ['id','created','request','status','revision','error']} for t in store.tasks()]
@@ -101,6 +104,21 @@ def create_app(data_dir=None,oauth_client=None):
 
     @app.get('/api/tasks/{id}/logs')
     def logs(id:str):store.task(id);return store.logs(id)
+
+    @app.post('/api/tasks/{id}/manual')
+    def manual_review(id: str, body: Revision):
+        def release(task, _connection):
+            if (task['status'] != 'interrupted' or task['revision'] != body.revision
+                    or task['request']['mode'] != 'gigachat' or not task.get('result')):
+                raise ValueError('Откройте прерванную проверку с сохранённым результатом')
+            task['status'] = 'completed'
+            task['result']['summary'] = 'Юрист продолжил проверку по результатам локальных правил.'
+            task['result']['limitations'].append('Заключение GigaChat отсутствует. Требуется ручной анализ условий.')
+            task['error'] = None
+            task['approval'] = None
+            task['revision'] += 1
+        store.mutate(id, release)
+        return {'ok': True}
 
     @app.post('/api/tasks/{id}/decisions')
     def decisions(id:str,body:Decisions):

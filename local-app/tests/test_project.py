@@ -171,3 +171,27 @@ def test_agent_budget_stop_and_no_result(setup):
         def response(self,*args):return {'output':[],'usage':{'total_tokens':10}}
     t=store.create(r);run_review(store,Fake(),t['id']);saved=store.task(t['id'])
     assert saved['status']=='interrupted' and saved['result'] is None
+
+def test_interrupted_gigachat_keeps_manual_draft(tmp_path):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    store = app.state.store
+    request = fixture_docs(store)
+    request.update(mode='gigachat', model='GigaChat-2')
+    task = store.create(request)
+
+    class Unavailable:
+        def review(self, *args):
+            raise ValueError('GigaChat временно недоступен')
+
+    run_review(store, Unavailable(), task['id'])
+    partial = store.task(task['id'])
+    assert partial['status'] == 'interrupted'
+    assert len(partial['result']['findings']) == 5
+    headers = {'X-CSRF-Token': client.get('/api/bootstrap').json()['csrf']}
+    path = '/api/tasks/' + task['id'] + '/manual'
+    assert client.post(path, json={'revision':partial['revision']}, headers=headers).status_code == 200
+    completed = store.task(task['id'])
+    assert completed['status'] == 'completed' and not completed['approval']
+    assert 'ручной анализ' in completed['result']['limitations'][-1]
+    assert client.post(path, json={'revision':partial['revision']}, headers=headers).status_code == 400

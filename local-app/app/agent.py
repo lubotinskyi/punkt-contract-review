@@ -90,6 +90,9 @@ def run_review(store,oauth,id):
             draft=demo_result(kit)
             for name in ('check_numbers','lookup_supplier'):
                 store.log(id,name,{},kit.call(name,{}))
+            draft.summary='Выполнены формализованные проверки. Заключение GigaChat ещё не получено.'
+            t['result']=draft.model_dump()
+            store.update(t)
             result,used=oauth.review(kit,draft,t['request']['model'],t['request']['max_tokens'])
             result=ReviewResult.model_validate(result.model_dump())
             checked=validate_result(result,kit.docs,kit.contract)
