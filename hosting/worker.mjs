@@ -28,9 +28,11 @@ async function reserve(bucket) {
   return false;
 }
 
+function online(env) { return env.GIGACHAT_ONLINE === "1" && Boolean(env.BUCKET && env.GIGACHAT_CREDENTIALS); }
+
 async function review(request, env) {
   if (request.method !== "POST") return reply({detail:"Требуется POST."},405);
-  if (!env.BUCKET || !env.GIGACHAT_CREDENTIALS) return reply({detail:"Сервер GigaChat не настроен."},503);
+  if (!online(env)) return reply({detail:"Онлайн-анализ сейчас выключен. Доступна учебная проверка."},503);
   if (request.headers.get("origin") !== new URL(request.url).origin) return reply({detail:"Недопустимый источник запроса."},403);
   const reader = request.body?.getReader();
   if (!reader) return reply({detail:"Пустой запрос."},400);
@@ -43,7 +45,7 @@ async function review(request, env) {
   }
   let input;
   try { input=JSON.parse(await new Blob(chunks).text()); } catch {return reply({detail:"Некорректный комплект."},400);}
-  if (!Array.isArray(input.documents) || !input.documents.length || input.documents.length>5) return reply({detail:"Нужны документы проверки."},400);
+  if (!Array.isArray(input?.documents) || !input.documents.length || input.documents.length>5) return reply({detail:"Нужны документы проверки."},400);
   const ids=new Set();
   for(const d of input.documents){
     if(!d || !["contract","template","policy","specification","suppliers"].includes(d.role) || typeof d.id!=="string" || ids.has(d.id) || !Array.isArray(d.clauses) || !d.clauses.length || d.clauses.length>400 || d.clauses.some(c=>!c || typeof c.text!=="string" || typeof c.id!=="string"))return reply({detail:"Неверный формат пунктов."},400);
@@ -66,7 +68,7 @@ async function review(request, env) {
 export default {async fetch(request,env){
  const path=new URL(request.url).pathname;
  if(path==="/api/gigachat/status" && request.method==="GET"){
-   return reply({enabled:env.GIGACHAT_ONLINE==="1"});
+   return reply({enabled:online(env)});
  }
  if(path==="/api/gigachat/review"){
    try{return await review(request,env);}catch{return reply({detail:"Сервис проверки временно недоступен."},503);}
