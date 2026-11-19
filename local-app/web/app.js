@@ -80,7 +80,6 @@ async function loadLogs(){$('logs').textContent=JSON.stringify(await api('/api/t
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
 bootstrap().then(loadDocuments).then(syncMode).catch(e=>notify(e.message));
 
-$("hero-demo").onclick=()=>{document.querySelector("[data-tab=workspace]").click();$("examples").click();$("app-area").scrollIntoView({behavior:"smooth"});};
 $("header-history").onclick=e=>{e.preventDefault();document.querySelector(".workspace-tabs [data-tab=history]").click();$("app-area").scrollIntoView({behavior:"smooth"});};
 
 function updateDecisionBar() {
