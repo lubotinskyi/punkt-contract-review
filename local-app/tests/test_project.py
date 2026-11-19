@@ -195,3 +195,92 @@ def test_interrupted_gigachat_keeps_manual_draft(tmp_path):
     assert completed['status'] == 'completed' and not completed['approval']
     assert 'ручной анализ' in completed['result']['limitations'][-1]
     assert client.post(path, json={'revision':partial['revision']}, headers=headers).status_code == 400
+
+def test_delivery_written_in_words(setup):
+    store, request, _ = setup
+    path = ROOT / 'examples/evaluation/hard-paraphrase.txt'
+    contract = store.put_document(parse_document(path.name, path.read_bytes(), 'contract'))
+    kit = Toolkit(store, dict(request, contract_id=contract['id']))
+    finding = next(f for f in demo_result(kit).findings if f.id == 'delivery')
+    assert 'шестьдесят календарных дней' in finding.contract.quote
+    assert 'не более 30 календарных дней' in finding.evidence[0].quote
+
+
+def test_gigachat_ignores_equal_totals_and_keeps_missing_acceptance(setup, monkeypatch):
+    from app.giga import GigaChat
+
+    store, request, _ = setup
+    path = ROOT / 'examples/evaluation/hard-missing-acceptance.txt'
+    contract = store.put_document(parse_document(path.name, path.read_bytes(), 'contract'))
+    kit = Toolkit(store, dict(request, contract_id=contract['id']))
+
+    def clause_id(doc, text):
+        return next(clause['id'] for clause in doc['clauses'] if text in clause['text'])
+
+    def finding(title, clause, basis):
+        return dict(title=title, explanation='Проверьте условие договора.', suggestion='Уточнить условие.',
+                    category='нарушение', clause=clause_id(contract, clause),
+                    source=kit.policy['id'], basis=clause_id(kit.policy, basis))
+
+    response = {'summary': 'Проверка', 'additional': [
+        finding('Несоответствие общей стоимости спецификации', 'Общая стоимость:', 'Общая стоимость договора'),
+        finding('Отсутствие порядка приёмки', 'Прочие условия', 'Договор должен содержать порядок приёмки'),
+    ]}
+    client = GigaChat(store.root)
+    monkeypatch.setattr(client, 'api', lambda *args, **kwargs: {
+        'choices': [{'message': {'function_call': {'arguments': response}}}]
+    })
+    result, _ = client.review(kit, demo_result(kit), 'GigaChat-2', 65000)
+    assert [f.title for f in result.findings] == ['Отсутствие порядка приёмки']
+    assert any('суммы договора и спецификации совпадают' in line for line in result.limitations)
+
+def test_rule_coverage_marks_missing_batches_and_preserves_cited_discrepancy(setup):
+    from app.rule_checks import evaluate_rules
+
+    _, _, kit = setup
+    kit.contract = {**kit.contract, 'clauses': [
+        {'id': f'p{i}', 'text': f'{i}. Условие договора для проверки.'} for i in range(1, 57)
+    ]}
+    batches = []
+
+    def respond(*args, **kwargs):
+        content = json.loads(kwargs['json']['messages'][-1]['content'])
+        batches.append(content)
+        first = content['contract'][0]['id']
+        checks = []
+        if first != 'p49':
+            for rule in content['rules']:
+                key = rule['rule_id']
+                status = 'расхождение' if first == 'p33' and key.endswith('-quality') else 'соответствует'
+                checks.append(dict(rule=key, status=status, clause=first, explanation='Результат сверки.'))
+        return {'choices': [{'message': {'function_call': {'arguments': {'checks': checks}}}}]}
+
+    rows, _, _ = evaluate_rules(respond, kit, 'test', 65000)
+    assert sum(len(batch['contract']) for batch in batches) == 56
+    assert len(batches) == 4
+    assert next(row for row in rows if row.id.endswith('-quantity')).status == 'не проверено'
+    quality = next(row for row in rows if row.id.endswith('-quality'))
+    assert quality.status == 'расхождение' and quality.evidence.clause_id == 'p33'
+
+@pytest.mark.parametrize('extension', ['txt', 'docx', 'pdf'])
+def test_supplier_kit_across_formats(tmp_path, extension):
+    store = Store(tmp_path)
+    request = fixture_docs(store)
+    for role, field, stem in [
+        ('contract', 'contract_id', 'Договор'), ('policy', 'policy_id', 'Положение'),
+        ('template', 'template_id', 'Типовая форма'), ('specification', 'specification_id', 'Спецификация')
+    ]:
+        path = ROOT / 'examples' / 'formats' / extension / f'{stem}.{extension}'
+        document = store.put_document(parse_document(path.name, path.read_bytes(), role))
+        request[field] = document['id']
+    kit = Toolkit(store, request)
+    result = demo_result(kit)
+    assert {f.id for f in result.findings} == {'delivery', 'payment', 'advance', 'warranty', 'total'}
+    assert validate_result(result, kit.docs, kit.contract)['valid']
+    for check in numeric_checks(kit.contract, kit.policy, kit.spec):
+        expected = {'delivery': ('60','30'), 'payment': ('45','30'), 'advance': ('50','20'),
+                    'warranty': ('6','12'), 'total': ('500000','400000')}[check['field']]
+        assert (check['observed'][0]['value'], check['limits'][0]['value']) == expected
+    if extension == 'pdf':
+        delivery = next(f for f in result.findings if f.id == 'delivery')
+        assert next(c['page'] for c in kit.contract['clauses'] if c['id'] == delivery.contract.clause_id) == 2

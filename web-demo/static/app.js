@@ -13,14 +13,6 @@ $('login').onclick=handle(async()=>{const {url}=await post('/api/oauth/start');w
 $('logout').onclick=handle(async()=>{const result=await post('/api/oauth/logout');await bootstrap();$('model').replaceChildren();notify(result.revoked?'Вы вышли из ChatGPT.':'Вы вышли локально. Отзыв сессии не подтверждён; отключить приложение можно в настройках ChatGPT.');});
 $('models').onclick=handle(async()=>{await bootstrap();setOptions($('model'),await api('/api/models'));notify('Каталог получен. Фактический доступ проверяется при запросе к модели.');});
 const documentFields = {contract:'contract_id', template:'template_id', policy:'policy_id', specification:'specification_id', suppliers:'supplier_id'};
-$('examples').onclick = handle(async () => {
- const example = await post('/api/examples');
- await loadDocuments();
- for (const [role, id] of Object.entries(example.selected)) $(documentFields[role]).value = id;
- syncRows(); $('mode').value = 'demo';
- $('mode').dispatchEvent(new Event('change'));
- notify('Учебный комплект выбран. Можно начинать проверку.');
-});
 function syncRows(){for(const b of document.querySelectorAll('.pick')){const select=$(documentFields[b.dataset.role]);const row=b.closest('.doc-row');row.querySelector('.file-name').textContent=select.value?select.selectedOptions[0].textContent:'Файл не выбран';b.textContent=select.value?'Заменить':'Добавить';b.setAttribute('aria-label',b.textContent+': '+row.querySelector('label').textContent);select.hidden=select.options.length<2;select.required=false;select.onchange=syncRows;}}
  let pickingRole;for(const b of document.querySelectorAll('.pick'))b.onclick=()=>{pickingRole=b.dataset.role;$('file').value='';$('file').click();};
  $('file').onchange=handle(async()=>{const file=$('file').files[0],role=pickingRole;if(!file)return;const data=new FormData();data.append('file',file);data.append('role',role);const added=await api('/api/documents',{method:'POST',body:data});await loadDocuments();$(documentFields[role]).value=added.id;syncRows();notify('Документ добавлен.');});
@@ -30,7 +22,7 @@ async function loadTasks(){const tasks=await api('/api/tasks');$('tasklist').rep
 $('refresh').onclick=handle(loadTasks);
 async function openTask(id,force=false){if(dirty&&!force&&!confirm('Отменить несохранённые правки?'))return;clearTimeout(poll);current=await api('/api/tasks/'+id);taskDocs={};for(const key of ['contract_id','template_id','policy_id','specification_id','supplier_id'])if(current.request[key]){const d=await api('/api/documents/'+current.request[key]);taskDocs[d.id]=d;}dirty=false;renderTask();await loadLogs();if(['queued','running'].includes(current.status))poll=setTimeout(()=>openTask(id,true).catch(e=>notify(e.message)),2500);}
 function renderTask(){
- $('review').classList.remove('hidden');$('reviewtitle').textContent=current.request.title;$('reviewbadge').textContent=current.request.mode==='demo'?'ДЕМОНСТРАЦИЯ БЕЗ LLM':'GIGACHAT-2';
+ $('review').classList.remove('hidden');$('reviewtitle').textContent=current.request.title;$('reviewbadge').textContent=current.request.mode==='demo'?'ПРОВЕРКА ПО ПРАВИЛАМ':'GigaChat';
  $('progress').textContent=statusNames[current.status]+' / шагов: '+current.steps+' / токенов: '+current.tokens+' / версия '+current.revision;
  $('reviewerror').textContent=current.error||'';$('resume').hidden=current.status!=='interrupted';
  const d=taskDocs[current.request.contract_id];$('contracttext').replaceChildren();for(const clause of d.clauses){const p=el('div',undefined,'clause');p.id='clause-'+clause.id;p.append(el('b',paragraphName(clause.text)+(clause.page?' / стр. '+clause.page:'')),el('span',clause.text));$('contracttext').append(p);}
@@ -81,7 +73,6 @@ async function loadLogs(){$('logs').textContent=JSON.stringify(await api('/api/t
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
 bootstrap().then(loadDocuments).catch(e=>notify(e.message));
 
-$("hero-demo").onclick=()=>{document.querySelector("[data-tab=workspace]").click();$("examples").click();$("app-area").scrollIntoView({behavior:"smooth"});};
 $("header-history").onclick=e=>{e.preventDefault();document.querySelector(".workspace-tabs [data-tab=history]").click();$("app-area").scrollIntoView({behavior:"smooth"});};
 
 function updateDecisionBar() {
@@ -117,7 +108,7 @@ async function showOnlineAvailability() {
  } catch { option.disabled = true; }
  if (option.disabled) {
   option.textContent = 'GigaChat временно недоступен';
-  $('account').textContent = 'Учебная проверка доступна. Онлайн-анализ временно недоступен.';
+  $('account').textContent = 'Доступна проверка по правилам. Онлайн-анализ временно недоступен.';
  }
 }
 showOnlineAvailability();

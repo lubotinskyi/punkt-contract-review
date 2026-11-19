@@ -1,3 +1,4 @@
+import re
 import io
 import json
 import os
@@ -148,17 +149,31 @@ def create_app(data_dir=None,oauth_client=None):
             return Response(json.dumps(payload,ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':'attachment; filename="review.json"'})
         if format!='docx':raise ValueError('Неизвестный формат')
         d=Document();d.add_heading('Протокол разногласий',0)
-        d.add_paragraph(t['request']['title']);d.add_paragraph('Режим: '+('демонстрационный без LLM' if t['request']['mode']=='demo' else ('GigaChat' if t['request']['mode']=='gigachat' else 'ChatGPT OAuth')))
+        d.add_paragraph(t['request']['title']);d.add_paragraph('Режим: '+('проверка по правилам' if t['request']['mode']=='demo' else ('GigaChat' if t['request']['mode']=='gigachat' else 'ChatGPT OAuth')))
         d.add_paragraph(t['result']['summary'])
+        def source_label(ref):
+            document = store.document(ref['document_id'])
+            clause = next((c for c in document['clauses'] if c['id'] == ref['clause_id']), {})
+            number = re.match(r'^\s*(\d+(?:\.\d+)*)[.)]\s', clause.get('text', ''))
+            parts = [document['name'], '§ '+number[1] if number else ref['clause_id']]
+            if clause.get('page'):
+                parts.append(f"стр. {clause['page']}")
+            if clause.get('location'):
+                parts.append(clause['location'])
+            return ', '.join(parts)
         for f in t['result']['findings']:
             if f['decision']!='accepted':continue
             d.add_heading(f['title'],2);d.add_paragraph('Категория: '+f['category'])
-            d.add_paragraph('Пункт '+f['contract']['clause_id']+': '+f['contract']['quote'])
+            d.add_paragraph(source_label(f['contract'])+': '+f['contract']['quote'])
             d.add_paragraph(f['explanation'])
             for ref in f['evidence']:
-                name=store.document(ref['document_id'])['name']
-                d.add_paragraph('Основание: '+name+', '+ref['clause_id']+' — '+ref['quote'])
+                d.add_paragraph('Основание: '+source_label(ref)+' — '+ref['quote'])
             if f['suggestion']:d.add_paragraph('Предложение: '+f['suggestion'])
+        if t['result'].get('rule_checks'):
+            d.add_heading('Проверка по правилам',2)
+            for rule in t['result']['rule_checks']:
+                d.add_paragraph(rule['status']+' — '+rule['requirement'])
+                if rule['explanation']:d.add_paragraph(rule['explanation'])
         d.add_heading('Ограничения проверки',2)
         for item in t['result']['limitations']:d.add_paragraph(item)
         if t['lawyer_note']:d.add_paragraph('Комментарий юриста: '+t['lawyer_note'])

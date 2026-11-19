@@ -33,6 +33,7 @@ def parse_document(name, data, role):
     if len(data)>8*1024*1024: raise ValueError('Файл больше 8 МБ')
     suffix=Path(name).suffix.lower()
     blocks=[]
+    locations={}
     if suffix in {'.txt','.md','.json','.csv'}:
         text=data.decode('utf-8-sig')
         blocks=[(p.strip(),None) for p in text.splitlines() if p.strip()]
@@ -40,9 +41,15 @@ def parse_document(name, data, role):
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             if sum(i.file_size for i in z.infolist())>24*1024*1024: raise ValueError('Слишком большой распакованный DOCX')
         d=Document(io.BytesIO(data))
+        table_number = 0
         for block in d.iter_inner_content():
             if hasattr(block,'rows'):
-                blocks.extend((' | '.join(c.text for c in row.cells),None) for row in block.rows)
+                table_number += 1
+                for row_number, row in enumerate(block.rows, 1):
+                    cells = [cell.text.strip() for cell in row.cells]
+                    if any(cells):
+                        locations[len(blocks)] = f'табл. {table_number}, строка {row_number}'
+                        blocks.append((' | '.join(cells), None))
             elif block.text.strip(): blocks.append((block.text.strip(),None))
     elif suffix=='.pdf':
         with pdfplumber.open(io.BytesIO(data)) as p:
@@ -50,12 +57,29 @@ def parse_document(name, data, role):
             for i,page in enumerate(p.pages,1):
                 text=page.extract_text() or ''
                 if not text.strip(): raise ValueError(f'Страница {i} без текстового слоя. Нужен OCR или текстовый документ.')
-                blocks.extend((line.strip(),i) for line in text.splitlines() if line.strip())
+                paragraph = ''
+                for raw in text.splitlines():
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    # Join wrapped numbered clauses within a page; retain standalone headings and rows.
+                    continuation = (re.match(r'^\d+(?:\.\d+)*[.)]\s+', paragraph)
+                                    and not re.match(r'^\d+(?:\.\d+)*[.)]\s+', line)
+                                    and not paragraph.endswith(('.', '!', '?', ';'))
+                                    and len(paragraph) + len(line) < 3900)
+                    if continuation:
+                        paragraph += ' ' + line
+                    else:
+                        if paragraph:
+                            blocks.append((paragraph, i))
+                        paragraph = line
+                if paragraph:
+                    blocks.append((paragraph, i))
     else: raise ValueError('Поддерживаются DOCX, текстовый PDF, TXT, MD, CSV и JSON')
     if not blocks or sum(len(t) for t,_ in blocks)>120000 or len(blocks)>400:
         raise ValueError('Документ пустой или превышает лимит 120 000 символов / 400 фрагментов')
     id=uuid.uuid4().hex
-    clauses=[{'id':f'p{i}','text':text,'page':page} for i,(text,page) in enumerate(blocks,1)]
+    clauses=[{'id':f'p{i}','text':text,'page':page, 'location':locations.get(i-1)} for i,(text,page) in enumerate(blocks,1)]
     return {'id':id,'name':Path(name).name,'role':role,'sha256':hashlib.sha256(data).hexdigest(),'clauses':clauses,'text':'\n'.join(t for t,_ in blocks),'format':suffix}
 
 def normalized(s):
@@ -102,10 +126,51 @@ def values(d,pattern):
             except InvalidOperation: pass
     return out
 
+RUSSIAN_TENS = dict(zip(
+    ('двадцать', 'тридцать', 'сорок', 'пятьдесят', 'шестьдесят',
+     'семьдесят', 'восемьдесят', 'девяносто'), range(20, 100, 10)
+))
+PARAPHRASED_DELIVERY = re.compile(
+    r'\bтовар\s+переда[её]тся\s+через\s+(' + '|'.join(RUSSIAN_TENS)
+    + r')\s+календарных\s+дней\s+с\s+даты\s+(?:заключения|подписания)\s+договора\b', re.I
+)
+
+def delivery_values(contract, pattern):
+    observed = values(contract, pattern)
+    for clause in contract['clauses']:
+        for match in PARAPHRASED_DELIVERY.finditer(clause['text']):
+            observed.append({'value': str(RUSSIAN_TENS[match[1].lower()]),
+                             'source': citation(contract, clause)})
+    return observed
+
+def delivery_exceptions(contract, policy):
+    """Compare explicit calendar-day exceptions measured from signing."""
+    limits = values(policy, FIELDS['delivery'][1])
+    if len(limits) != 1:
+        return []
+    limit = limits[0]
+    rule = limit['source']['quote'].lower()
+    if not all(part in rule for part in ('не более', 'календар', 'с даты подписания')):
+        return []
+    tens = {'двадцать': 20, 'тридцать': 30, 'сорок': 40, 'пятьдесят': 50}
+    ordinal = {'первый': 1, 'второй': 2, 'третий': 3, 'четвёртый': 4,
+               'пятый': 5, 'шестой': 6, 'седьмой': 7, 'восьмой': 8, 'девятый': 9}
+    day = r'(?:([0-9]+)(?:-й)?|(' + '|'.join(tens) + r')\s+(' + '|'.join(ordinal) + '))'
+    pattern = re.compile(r'(?:передача|поставка|отгрузка) допускается на\s+' + day
+                         + r' календарный день с даты подписания', re.I)
+    deviations = []
+    for clause in contract['clauses']:
+        match = pattern.search(clause['text'].lower())
+        if match:
+            number = int(match[1]) if match[1] else tens[match[2]] + ordinal[match[3]]
+            if number > Decimal(limit['value']):
+                deviations.append((citation(contract, clause), number, limit))
+    return deviations
+
 def numeric_checks(contract,policy,spec=None):
     checks=[]
     for key,(label,pattern) in FIELDS.items():
-        observed=values(contract,pattern)
+        observed=delivery_values(contract,pattern) if key=='delivery' else values(contract,pattern)
         limits=values(spec if key=='total' and spec else policy,pattern)
         if len(observed)!=1 or len(limits)!=1:
             checks.append({'field':key,'label':label,'status':'unresolved','reason':'Нет однозначной пары значений','observed':observed,'limits':limits});continue
@@ -115,6 +180,9 @@ def numeric_checks(contract,policy,spec=None):
             def unit(s):
                 s=s.lower()
                 return 'work' if 'рабоч' in s else 'calendar' if 'календар' in s else None
+            if (key == 'delivery' and PARAPHRASED_DELIVERY.search(observed[0]['source']['quote'])
+                    and not re.search(r'с\s+даты\s+(?:заключения|подписания)\s+договора\b', quote)):
+                checks.append({'field':key,'label':label,'status':'unresolved','reason':'Различаются события отсчёта','observed':observed,'limits':limits});continue
             if unit(observed[0]['source']['quote'])!=unit(quote) or unit(quote) is None:
                 checks.append({'field':key,'label':label,'status':'unresolved','reason':'Не совпадают или не указаны единицы времени','observed':observed,'limits':limits});continue
         if key=='total': bad=a!=b

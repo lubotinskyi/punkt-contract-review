@@ -11,29 +11,58 @@ async function loadDocuments(){documents=await api('/api/documents');for(const [
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('hidden',x.id!==b.dataset.tab));if(b.dataset.tab==='history')loadTasks().catch(e=>notify(e.message));});
 $('models').onclick=handle(async()=>{await bootstrap();setOptions($('model'),await api('/api/models'));notify('Каталог получен. Фактический доступ проверяется при запросе к модели.');});
 const documentFields = {contract:'contract_id', template:'template_id', policy:'policy_id', specification:'specification_id', suppliers:'supplier_id'};
-$('examples').onclick = handle(async () => {
- const example = await post('/api/examples');
- await loadDocuments();
- for (const [role, id] of Object.entries(example.selected)) $(documentFields[role]).value = id;
- syncRows(); $('mode').value = 'demo';
- $('mode').dispatchEvent(new Event('change'));
- notify('Учебный комплект выбран. Можно начинать проверку.');
-});
 function syncRows(){for(const b of document.querySelectorAll('.pick')){const select=$(documentFields[b.dataset.role]);const row=b.closest('.doc-row');row.querySelector('.file-name').textContent=select.value?select.selectedOptions[0].textContent:'Файл не выбран';b.textContent=select.value?'Заменить':'Добавить';b.setAttribute('aria-label',b.textContent+': '+row.querySelector('label').textContent);select.hidden=select.options.length<2;select.required=false;select.onchange=syncRows;}}
  let pickingRole;for(const b of document.querySelectorAll('.pick'))b.onclick=()=>{pickingRole=b.dataset.role;$('file').value='';$('file').click();};
  $('file').onchange=handle(async()=>{const file=$('file').files[0],role=pickingRole;if(!file)return;const data=new FormData();data.append('file',file);data.append('role',role);const added=await api('/api/documents',{method:'POST',body:data});await loadDocuments();$(documentFields[role]).value=added.id;syncRows();notify('Документ добавлен.');});
-$('reviewform').onsubmit=handle(async e=>{e.preventDefault();for(const role of ['contract','template','policy'])if(!$(documentFields[role]).value){const b=document.querySelector('.pick[data-role='+role+']');b.focus();throw Error('Добавьте документ: '+b.closest('.doc-row').querySelector('label').textContent);}const body={};for(const id of ['title','mode','model','contract_id','template_id','policy_id','specification_id','supplier_id'])body[id]=$(id).value||null;body.model=$('model').value;body.max_steps=+$('max_steps').value;body.max_tokens=+$('max_tokens').value;if(body.mode==='gigachat'&&!body.model)throw new Error('Обновите каталог GigaChat и выберите модель');const submit=$('reviewform').querySelector('[type=submit]');if(submit.disabled)return;submit.disabled=true;let result;try{result=await post('/api/tasks',body);}finally{submit.disabled=false;}await openTask(result.id);$('review').scrollIntoView({behavior:'smooth'});});
-const statusNames={queued:'В очереди',running:'Агент работает',completed:'Готово к проверке юристом',interrupted:'Нужна проверка или продолжение',failed:'Ошибка'};
+$('reviewform').onsubmit=handle(async e=>{e.preventDefault();for(const role of ['contract','template','policy'])if(!$(documentFields[role]).value){const b=document.querySelector('.pick[data-role='+role+']');b.focus();throw Error('Добавьте документ: '+b.closest('.doc-row').querySelector('label').textContent);}const body={};for(const id of ['title','mode','model','contract_id','template_id','policy_id','specification_id','supplier_id'])body[id]=$(id).value||null;body.model=$('model').value;body.max_steps=+$('max_steps').value;body.max_tokens=+$('max_tokens').value;if(body.mode==='gigachat'&&!body.model)throw new Error('Обновите каталог GigaChat и выберите модель');const submit=$('reviewform').querySelector('[type=submit]');if(submit.disabled)return;submit.disabled=true;
+ const feedback=$('submit-progress');
+ feedback.textContent='Запускаем проверку…';
+ try {
+  const result=await post('/api/tasks',body);
+  if(await openTask(result.id))$('review').scrollIntoView({behavior:'smooth'});
+ } finally {
+  feedback.textContent='';
+  submit.disabled=false;
+ }});
+const statusNames={queued:'В очереди',running:'Проверка идёт',completed:'Готово к проверке юристом',interrupted:'Нужна проверка или продолжение',failed:'Ошибка'};
 async function loadTasks(){const tasks=await api('/api/tasks');$('tasklist').replaceChildren();if(!tasks.length)$('tasklist').append(el('p','Пока нет проверок.'));for(const t of tasks){const row=el('div',undefined,'taskrow');const content=el('div');content.append(el('strong',t.request.title),el('div',new Date(t.created).toLocaleString('ru-RU')+' / '+statusNames[t.status],'small'));const button=el('button','Открыть','quiet');button.onclick=handle(()=>openTask(t.id));row.append(content,button);$('tasklist').append(row);}}
 $('refresh').onclick=handle(loadTasks);
-async function openTask(id,force=false){if(dirty&&!force&&!confirm('Отменить несохранённые правки?'))return;clearTimeout(poll);current=await api('/api/tasks/'+id);taskDocs={};for(const key of ['contract_id','template_id','policy_id','specification_id','supplier_id'])if(current.request[key]){const d=await api('/api/documents/'+current.request[key]);taskDocs[d.id]=d;}dirty=false;renderTask();await loadLogs();if(['queued','running'].includes(current.status))poll=setTimeout(()=>openTask(id,true).catch(e=>notify(e.message)),2500);}
+async function openTask(id,force=false){if(dirty&&!force&&!confirm('Отменить несохранённые правки?'))return;clearTimeout(poll);current=await api('/api/tasks/'+id);taskDocs={};for(const key of ['contract_id','template_id','policy_id','specification_id','supplier_id'])if(current.request[key]){const d=await api('/api/documents/'+current.request[key]);taskDocs[d.id]=d;}dirty=false;renderTask();await loadLogs();if(['queued','running'].includes(current.status))schedulePoll(id);return true;}
+function schedulePoll(id){
+ poll=setTimeout(async()=>{
+  try {await openTask(id,true);}
+  catch {
+   if(current?.id===id){
+    $('analysis-progress').textContent='Не удалось обновить статус. Повторяем запрос…';
+    schedulePoll(id);
+   }
+  }
+ },2500);
+}
 function renderTask(){
- $('review').classList.remove('hidden');$('reviewtitle').textContent=current.request.title;$('reviewbadge').textContent=current.request.mode==='demo'?'ДЕМОНСТРАЦИЯ БЕЗ LLM':current.request.mode==='gigachat'?'GIGACHAT':'АРХИВ / CHATGPT';
+ $('review').classList.remove('hidden');$('reviewtitle').textContent=current.request.title;$('reviewbadge').textContent=current.request.mode==='demo'?'ПРОВЕРКА ПО ПРАВИЛАМ':current.request.mode==='gigachat'?'GIGACHAT':'АРХИВ / CHATGPT';
+ const waiting=current.status==='queued'||current.status==='running';
+ const message=current.status==='queued'?'Проверка в очереди':
+  current.request.mode==='gigachat'?'GigaChat анализирует договор. Это может занять некоторое время.':'Сверяем договор с правилами…';
+ const indicator=$('analysis-progress');
+ const text=waiting?message:'';
+ if(indicator.textContent!==text)indicator.textContent=text;
  $('progress').textContent=statusNames[current.status]+' / шагов: '+current.steps+' / токенов: '+current.tokens+' / версия '+current.revision;
  $('manual').hidden=!(current.status==='interrupted' && current.result && current.request.mode==='gigachat');
  $('reviewerror').textContent=current.error||'';$('resume').hidden=current.status!=='interrupted';
  const d=taskDocs[current.request.contract_id];$('contracttext').replaceChildren();for(const clause of d.clauses){const p=el('div',undefined,'clause');p.id='clause-'+clause.id;p.append(el('b',paragraphName(clause.text)+(clause.page?' / стр. '+clause.page:'')),el('span',clause.text));$('contracttext').append(p);}
  const result=current.result;$('summary').textContent=result?.summary||'Здесь появится результат после завершения проверки.';$('limitations').replaceChildren();for(const l of result?.limitations||[])$('limitations').append(el('div',l,'limitation'));
+ const checks=$('rule-checks');checks.replaceChildren();checks.hidden=!result?.rule_checks?.length;
+ if(!checks.hidden){
+  checks.append(el('h3','Проверка по правилам'));
+  const rules=result.rule_checks, unresolved=rules.filter(rule=>['недостаточно данных','не проверено'].includes(rule.status)).length;
+  checks.append(el('p','Правил в отчёте: '+rules.length+'. Требуют ручной сверки из-за неполного ответа или недостатка данных: '+unresolved+'.','small'));
+  for(const rule of rules){
+   const row=el('details',undefined,'rule-check');row.append(el('summary',rule.status+' · '+rule.requirement),el('p',rule.explanation),el('blockquote',rule.basis.quote));
+   if(rule.evidence){const link=el('button','Договор · '+refName(rule.evidence),'source-link');link.onclick=()=>highlight(rule.evidence.clause_id);row.append(link,el('blockquote',rule.evidence.quote));}
+   checks.append(row);
+  }
+ }
  $('findings').replaceChildren();for(const f of result?.findings||[])renderFinding(f);
  $('lawyer_note').value=current.lawyer_note||'';for(const id of ['save','approve','addfinding'])$(id).disabled=current.status!=='completed';
  updateDecisionBar();approvalUI();
@@ -43,7 +72,7 @@ function approvalUI(){for(const [id,format] of [['docx','docx'],['json','json']]
 function highlight(id){document.querySelectorAll('.clause').forEach(p=>p.classList.toggle('selected',p.id==='clause-'+id));const n=$('clause-'+id);if(n){n.tabIndex=-1;n.focus({preventScroll:true});n.scrollIntoView({block:'center'});}}
 function editField(box,label,value,update,multiline=false){const wrap=el('label',label);const input=el(multiline?'textarea':'input');input.value=value;if(multiline)input.rows=3;input.oninput=()=>{update(input.value);markDirty();};wrap.append(input);box.append(wrap);return input;}
 function paragraphName(text){const n=(text||'').match(/^\s*(?:§\s*)?(\d+(?:\.\d+)*)(?:[.)]|\s+(?=\S))/);return n?'§ '+n[1]:'Фрагмент';}
-function refName(ref){const clause=taskDocs[ref.document_id]?.clauses.find(p=>p.id===ref.clause_id);return paragraphName(clause?.text);}
+function refName(ref){const clause=taskDocs[ref.document_id]?.clauses.find(p=>p.id===ref.clause_id);return [paragraphName(clause?.text),clause?.page && 'стр. '+clause.page,clause?.location].filter(Boolean).join(' · ');}
 function compactValue(text,id){
  const units={delivery:/\d+\s+(?:календарн\S*|рабоч\S*)\s+(?:дней|дня|день)/i,payment:/\d+\s+(?:календарн\S*|рабоч\S*)\s+(?:дней|дня|день)/i,warranty:/\d+\s+месяц\S*/i,advance:/\d+(?:[.,]\d+)?\s*%/,total:/\d[\d \u00a0]*(?:[.,]\d+)?\s*(?:руб\.?|₽)/i};
  const match=units[id]?.exec(text||'');if(!match)return '';const pre=text.slice(0,match.index);return (/не более|не дольше|максимум/i.test(pre)?'до ':/не менее|минимум/i.test(pre)?'от ':'')+match[0].trim();
@@ -80,7 +109,6 @@ async function loadLogs(){$('logs').textContent=JSON.stringify(await api('/api/t
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
 bootstrap().then(loadDocuments).then(syncMode).catch(e=>notify(e.message));
 
-$("hero-demo").onclick=()=>{document.querySelector("[data-tab=workspace]").click();$("examples").click();$("app-area").scrollIntoView({behavior:"smooth"});};
 $("header-history").onclick=e=>{e.preventDefault();document.querySelector(".workspace-tabs [data-tab=history]").click();$("app-area").scrollIntoView({behavior:"smooth"});};
 
 function updateDecisionBar() {

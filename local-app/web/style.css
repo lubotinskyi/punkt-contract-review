@@ -23,3 +23,99 @@ body{background:#fcfcf8;color:var(--ink);font-family:"Segoe UI",Arial,sans-serif
 
 
 .source-view{max-width:min(650px,92vw);max-height:78vh;border:1px solid var(--line);padding:24px;color:var(--ink);background:#fcfcf7}.source-view::backdrop{background:#14281c66}.source-view button{position:sticky;top:0;float:right}.source-view h3{overflow-wrap:anywhere;margin:8px 0 20px}.source-view p{padding:8px;overflow-wrap:anywhere}.source-view .selected{background:#e0ebcf;border-left:3px solid var(--blue)}
+#rule-checks{margin:20px 0;padding:16px 0;border-block:1px solid var(--line)}.rule-check{padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.rule-check blockquote{padding:8px 12px;border-left:2px solid var(--line);margin:8px 0}
+
+.analysis-progress:empty{display:none}
+.analysis-progress{display:flex;align-items:center;gap:10px;margin:8px 0;color:#214b35;font-weight:600}
+.analysis-progress::before{content:'';width:1em;height:1em;flex:none;border:2px solid #a9c1a8;border-top-color:#214b35;border-radius:50%;animation:analysis-spin .8s linear infinite}
+@keyframes analysis-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.analysis-progress::before{animation:none}}
+
+/* Contract cover and register */
+.folio-nav,.folio,.folio-index{--stock:#f4efdb;--press:#005438}
+.folio-nav,.folio{background:var(--press);color:var(--stock)}
+.folio-nav{display:flex;justify-content:space-between;align-items:center;padding:12px max(5vw,calc((100% - 1330px)/2));border-bottom:1px solid #649581}
+.folio-nav a{color:inherit;text-decoration:none}.folio-nav nav{display:flex;gap:clamp(14px,3vw,50px);font:600 14px/1.3 Arial,sans-serif}.folio-nav a:hover,.folio-bottom button:hover{text-decoration:underline}
+.folio-brand{font:900 34px/.95 Arial,sans-serif;letter-spacing:-3px}
+.folio{width:100vw;margin-left:calc(50% - 50vw);padding-inline:max(5vw,calc((100% - 1330px)/2))}
+.folio-frame{border-inline:1px solid #649581;padding:20px clamp(15px,3.5vw,52px) 27px}.folio-meta,.folio-bottom{display:flex;align-items:center;justify-content:space-between;gap:20px}
+.folio-meta{font:600 12px/1.3 Arial,sans-serif}.folio-cover{position:relative;padding:20px 0 27px;text-align:center}
+.folio-cover h1{font:900 clamp(105px,13vw,190px)/.84 Impact,'Arial Narrow',Arial,sans-serif;letter-spacing:-.045em;margin:0;color:inherit}.folio-cover h1 span{display:block}
+.folio-slip{display:inline-flex;align-items:center;position:absolute;left:50%;top:51%;transform:translate(-50%,-50%) rotate(-6deg);background:var(--stock);color:#152c20;border:1px solid #163025;box-shadow:3px 4px 0 #163025;font:italic clamp(15px,1.7vw,25px)/1.4 Georgia,serif;white-space:nowrap}
+.folio-slip b{align-self:stretch;padding:6px 12px;border-right:1px solid #8e9983}.folio-slip span{padding:6px 14px}.folio-slip strong{box-shadow:inset 0 -.35em #b6d885}
+.folio-bottom{border-top:1px solid #649581;padding-top:18px}.folio-bottom p{margin:0;max-width:36ch;color:inherit;font:17px/1.4 Georgia,serif}.folio-bottom>div{display:flex;align-items:center;gap:20px}
+.folio-bottom a,.folio-bottom button{font:600 15px/1.25 Arial,sans-serif}.folio-bottom a{display:inline-flex;gap:24px;align-items:center;background:var(--stock);color:var(--press);text-decoration:none;padding:14px 19px}.folio-bottom i{font-style:normal}.folio-bottom button{border:0;background:transparent;color:inherit;padding:10px 0}.folio :focus-visible,.folio-nav :focus-visible{outline:3px solid #bdea72;outline-offset:3px}
+.folio-index{display:grid;grid-template-columns:.75fr repeat(3,1fr);background:var(--stock);color:var(--press);border:1px solid #a5ad96;margin:0 0 44px}.folio-index>*{margin:0;padding:clamp(15px,2vw,30px);border-right:1px solid #a5ad96}.folio-index>:last-child{border:0}.folio-index h2{font:italic 32px/1 Georgia,serif}.folio-index h3,.folio-index p{font:14px/1.4 Arial,sans-serif;color:inherit;margin:0}.folio-index strong{display:block;font:800 clamp(32px,4.2vw,65px)/1.2 Arial,sans-serif;letter-spacing:-.065em}
+@media(max-width:700px){.folio-nav{padding:14px 4vw}.folio-nav nav{font-size:12px;gap:12px}.folio-brand{font-size:28px}.folio{padding-inline:4vw}.folio-frame{padding:16px 10px 18px}.folio-meta{font-size:10px;gap:6px}.folio-cover{padding:42px 0}.folio-cover h1{font-size:clamp(52px,15vw,100px)}.folio-slip{font-size:14px}.folio-slip b,.folio-slip span{padding:4px 8px}.folio-bottom{display:block}.folio-bottom p{font-size:16px}.folio-bottom>div{margin-top:16px;gap:15px;flex-wrap:wrap}.folio-bottom a,.folio-bottom button{font-size:13px}.folio-bottom a{gap:10px;padding:12px}.folio-index{grid-template-columns:1fr 1fr;margin-bottom:28px}.folio-index>:nth-child(2){border-right:0}.folio-index>:nth-child(-n+2){border-bottom:1px solid #a5ad96}.folio-index strong{font-size:34px}}
+
+/* The working edition: a paper desk with a separate settings column. */
+body {background:#eef1e9;color:#162e23}
+main {max-width:1440px;padding:0 clamp(12px,3vw,48px) 20px}
+.folio-nav {background:transparent;color:#124a36;border:0;max-width:1440px;margin:auto;padding:18px clamp(18px,3vw,48px)}
+.folio,.folio-index,.workspace-zone,#review,.connection-panel,footer {border-radius:26px}
+.folio {width:auto;margin:0;padding:0;overflow:hidden}
+.folio-frame {border:0;padding-inline:clamp(18px,4vw,64px)}
+.folio-slip {border-radius:9px}
+.folio-bottom a,button,.button,.pick,.folio-bottom button {border-radius:999px}
+.folio-index {margin:12px 0 28px;overflow:hidden;border:0;background:#e4ebca}
+.workspace-zone,.connection-panel,#review {padding:clamp(16px,3vw,44px);border:0;margin-block:18px;background:#fffefa}
+.workspace-zone {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:24px}
+.zone-head h2,#reviewtitle {margin:0;font:normal clamp(34px,4vw,62px)/1.06 Georgia,serif;letter-spacing:-.055em}
+.workspace-tabs {margin:0;gap:3px;padding:4px;background:#eaf0e5;border:0;border-radius:999px}
+.workspace-tabs button,.workspace-tabs button.active {border:0;border-radius:999px;padding:10px 16px}
+.workspace-tabs button.active {background:#154c36;color:white}
+.workspace-zone .tab {grid-column:1/-1;border-top:1px solid #cdd6c9;padding-top:24px}
+#reviewform {display:grid;grid-template-columns:minmax(0,1.65fr) minmax(245px,.8fr);align-items:start;gap:24px}
+.document-list,.review-settings {min-width:0}
+.review-settings {background:#e9efdF;border-radius:20px;padding:clamp(16px,2vw,30px)}
+.review-settings h3 {margin:0 0 18px;font:normal 26px/1.1 Georgia,serif}
+.review-settings .formgrid {display:grid;grid-template-columns:1fr;gap:12px;margin:0}
+.review-settings .actions {flex-direction:column;align-items:stretch}
+.document-list>.small {margin:0;color:var(--muted)}
+#workspace .group-title {margin:20px 0 4px}
+.doc-row {border-bottom:1px solid #d9dfd4;gap:10px;padding:14px 0}
+.doc-row select,select,input,textarea {border-radius:10px;min-width:0}
+.pick,.quiet {background:#f8faf4}
+#history .taskrow {padding:16px 18px;background:#f1f5ec;border:0;border-radius:14px;margin:8px 0}
+#review {background:#dce5d8}
+#review .reviewgrid {gap:14px;align-items:start}
+#review .reviewgrid>div {border:0;border-radius:20px;padding:clamp(15px,2vw,28px);background:#fffefa}
+#review .reviewgrid>div:first-child {background:#f6f4e8}
+#review .reviewgrid h3 {font-family:Georgia,serif}
+.clause,.decision-bar,.comparison>div,.category,.source-view,.source-view .selected {border-radius:12px}
+.decision-bar {background:#e7efdf;border:0;padding:12px;gap:12px}
+.finding {border-top:1px solid #aebfae}
+.comparison {gap:7px}
+.finding .category {padding:5px 10px;border-radius:999px}
+#review>details {background:#f2f5ed;border-radius:14px;padding:12px 16px;margin-top:16px}
+.connection-panel {background:#d7e8b9}
+.connection-panel .account-card {max-width:none;display:grid;grid-template-columns:minmax(180px,.75fr) minmax(0,1.25fr);gap:10px 30px;align-items:start}
+.account-card h3 {grid-column:1;grid-row:1/5;margin:0;font:normal clamp(28px,3vw,48px)/1.06 Georgia,serif;letter-spacing:-.05em}
+.account-card>p,.account-card>#account {grid-column:2;margin:0;max-width:68ch}
+footer {background:#123e2f;color:#edf2dd;display:grid;grid-template-columns:1fr minmax(200px,1fr) auto;gap:24px;padding:clamp(22px,4vw,60px);align-items:end;border:0}
+footer a,footer p,footer .brand {color:inherit;margin:0}
+footer .brand {font:900 clamp(48px,7vw,106px)/.86 Arial,sans-serif;letter-spacing:-.085em}
+footer>a:last-child {border:1px solid #94b29d;border-radius:999px;padding:10px 16px;text-decoration:none}
+@media(max-width:850px) {
+ #reviewform {grid-template-columns:1fr}
+ .workspace-zone {display:block}
+ .workspace-tabs {display:inline-flex;margin:16px 0}
+}
+@media(max-width:700px) {
+ .folio,.folio-index,.workspace-zone,#review,.connection-panel,footer {border-radius:18px}
+ .folio-cover h1 {font-size:clamp(48px,14vw,95px)}
+ .folio-index {margin-bottom:16px}
+ .doc-row {grid-template-columns:minmax(0,1fr) auto}
+ .pick {min-width:0}
+ .workspace-zone .sectionhead {align-items:start;gap:10px}
+ .connection-panel .account-card,footer {display:flex;flex-direction:column;align-items:flex-start;gap:14px}
+ .account-card h3 {margin-bottom:4px}
+ footer {padding:24px}
+}
+
+@font-face{font-family:"Golos Text";src:url("./golos.ttf") format("truetype");font-weight:400 900;font-display:swap}
+body,button,.button,input,select,textarea,.folio-brand,.folio-nav nav,.folio-bottom a,.folio-bottom p,.zone-head h2,#reviewtitle,.review-settings h3,#review .reviewgrid h3,#workspace .group-title,.account-card h3,.clause b,footer .brand{font-family:"Golos Text",sans-serif}
+.product-cover h1{font:580 clamp(40px,6.8vw,100px)/1.02 "Golos Text",sans-serif;letter-spacing:-.055em;margin:0 0 clamp(28px,4vw,60px);color:inherit}
+.product-cover .folio-frame{padding-block:clamp(24px,4vw,62px)}
+.product-cover .folio-bottom p{max-width:56ch;font-weight:400;letter-spacing:0}
+@media(max-width:700px){.product-cover .folio-bottom a{margin-top:16px}.product-cover h1{font-size:clamp(32px,8vw,52px)}}

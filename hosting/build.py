@@ -3,7 +3,7 @@ import json,base64
 root=Path(__file__).resolve().parent
 src=root.parent/'web-demo'
 output=root/'dist'
-mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png'}
+mime={'.ttf':'font/ttf','.txt':'text/plain; charset=utf-8','.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png'}
 assets={}
 for p in [src/'index.html',*(src/'static').rglob('*')]:
  if p.is_file():

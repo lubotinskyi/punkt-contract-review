@@ -18,10 +18,19 @@ class Finding(BaseModel):
     suggestion: str = Field(default='', max_length=3000)
     decision: Literal['pending', 'accepted', 'rejected'] = 'pending'
 
+class RuleCheck(BaseModel):
+    id: str
+    requirement: str
+    status: Literal['соответствует', 'расхождение', 'недостаточно данных', 'не проверено']
+    basis: Citation
+    evidence: Citation | None = None
+    explanation: str = ''
+
 class ReviewResult(BaseModel):
     model_config = ConfigDict(extra='forbid')
     summary: str = Field(min_length=3, max_length=5000)
     findings: list[Finding] = Field(max_length=200)
+    rule_checks: list[RuleCheck] = Field(default_factory=list)
     reviewed_clause_ids: list[str]
     limitations: list[str] = Field(max_length=100)
 
