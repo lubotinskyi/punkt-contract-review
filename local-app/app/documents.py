@@ -14,6 +14,8 @@ import pdfplumber
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+NUMBERED_CLAUSE = re.compile(r'^(?:п(?:ункт)?\.?\s*)?\d+(?:\.\d+)*[.)]\s+', re.I)
+
 ROLES={'contract','template','policy','specification','suppliers'}
 SEMANTIC_MODEL=os.environ.get('CONTRACT_SEMANTIC_MODEL','')
 EMBED_LOCK=threading.Lock()
@@ -46,7 +48,7 @@ def parse_document(name, data, role):
             if hasattr(block,'rows'):
                 table_number += 1
                 for row_number, row in enumerate(block.rows, 1):
-                    cells = [cell.text.strip() for cell in row.cells]
+                    cells = [cell.text.strip() for cell in {id(cell._tc): cell for cell in row.cells}.values()]
                     if any(cells):
                         locations[len(blocks)] = f'табл. {table_number}, строка {row_number}'
                         blocks.append((' | '.join(cells), None))
@@ -63,8 +65,8 @@ def parse_document(name, data, role):
                     if not line:
                         continue
                     # Join wrapped numbered clauses within a page; retain standalone headings and rows.
-                    continuation = (re.match(r'^\d+(?:\.\d+)*[.)]\s+', paragraph)
-                                    and not re.match(r'^\d+(?:\.\d+)*[.)]\s+', line)
+                    continuation = (NUMBERED_CLAUSE.match(paragraph)
+                                    and not NUMBERED_CLAUSE.match(line)
                                     and not paragraph.endswith(('.', '!', '?', ';'))
                                     and len(paragraph) + len(line) < 3900)
                     if continuation:
@@ -78,9 +80,9 @@ def parse_document(name, data, role):
     else: raise ValueError('Поддерживаются DOCX, текстовый PDF, TXT, MD, CSV и JSON')
     if not blocks or sum(len(t) for t,_ in blocks)>120000 or len(blocks)>400:
         raise ValueError('Документ пустой или превышает лимит 120 000 символов / 400 фрагментов')
-    id=uuid.uuid4().hex
+    document_id=uuid.uuid4().hex
     clauses=[{'id':f'p{i}','text':text,'page':page, 'location':locations.get(i-1)} for i,(text,page) in enumerate(blocks,1)]
-    return {'id':id,'name':Path(name).name,'role':role,'sha256':hashlib.sha256(data).hexdigest(),'clauses':clauses,'text':'\n'.join(t for t,_ in blocks),'format':suffix}
+    return {'id':document_id,'name':Path(name).name,'role':role,'sha256':hashlib.sha256(data).hexdigest(),'clauses':clauses,'text':'\n'.join(t for t,_ in blocks),'format':suffix}
 
 def normalized(s):
     return re.sub(r'\s+',' ',s).strip()
@@ -156,8 +158,8 @@ def delivery_exceptions(contract, policy):
     ordinal = {'первый': 1, 'второй': 2, 'третий': 3, 'четвёртый': 4,
                'пятый': 5, 'шестой': 6, 'седьмой': 7, 'восьмой': 8, 'девятый': 9}
     day = r'(?:([0-9]+)(?:-й)?|(' + '|'.join(tens) + r')\s+(' + '|'.join(ordinal) + '))'
-    pattern = re.compile(r'(?:передача|поставка|отгрузка) допускается на\s+' + day
-                         + r' календарный день с даты подписания', re.I)
+    pattern = re.compile(r'(?:передача|поставка|отгрузка)[^.\n]{0,60}?допускается\s+на\s+' + day
+                         + r'\s+календарный\s+день\s+с\s+даты\s+подписания', re.I)
     deviations = []
     for clause in contract['clauses']:
         match = pattern.search(clause['text'].lower())
@@ -219,6 +221,11 @@ def validate_result(result,docs,contract):
         if f.category in {'нарушение','на согласование'} and not f.evidence:errors.append(f'{f.id}: нет основания')
         for e in f.evidence:
             if not verify_citation(e,docs,{'policy','template','specification','suppliers'}):errors.append(f'{f.id}: неверная ссылка или цитата основания')
+    for rule in result.rule_checks:
+        if not verify_citation(rule.basis, docs, {'policy'}):
+            errors.append(f'{rule.id}: неверная цитата положения')
+        if rule.evidence and not verify_citation(rule.evidence, docs, {'contract'}):
+            errors.append(f'{rule.id}: неверная цитата договора')
     ids={p['id'] for p in contract['clauses']}
     reviewed=set(result.reviewed_clause_ids)
     if not reviewed<=ids:errors.append('Неизвестные номера проверенных пунктов')

@@ -1,7 +1,6 @@
 """Server-side GigaChat transport for the existing validated review tool loop."""
 import json
 import os
-import re
 import ssl
 import threading
 import time
@@ -12,7 +11,7 @@ import httpx
 
 from .documents import numeric_checks
 from .oauth import protect
-from .rule_checks import evaluate_rules
+from .rule_checks import evaluate_rules, add_missing_findings
 
 
 class GigaChat:
@@ -62,6 +61,40 @@ class GigaChat:
     def models(self):
         return [{"id": m["id"], "name": m["id"]} for m in self.api("GET", "models")["data"] if "embedding" not in m["id"].lower()]
 
+    def response(self, model, history, tools, instructions, budget):
+        messages = [{"role": "system", "content": instructions}]
+        names = {}
+        for item in history:
+            if item.get('type') == 'function_call':
+                names[item['call_id']] = item['name']
+                message = {'role': 'assistant', 'content': '', 'function_call': {
+                    'name': item['name'], 'arguments': json.loads(item['arguments'])}}
+                if item.get('functions_state_id'):
+                    message['functions_state_id'] = item['functions_state_id']
+            elif item.get('type') == 'function_call_output':
+                message = {'role': 'function', 'name': names[item['call_id']], 'content': item['output']}
+            else:
+                message = item
+            messages.append(message)
+        functions = [{key: tool[key] for key in ('name', 'description', 'parameters')} for tool in tools]
+        # Reserve input space before each request, including the tool definitions.
+        estimate = len(json.dumps([messages, functions], ensure_ascii=False)) // 2 + 64
+        available = min(4096, budget - estimate)
+        if available < 128:
+            raise ValueError('Недостаточно бюджета токенов для следующего шага.')
+        data = self.api('POST', 'chat/completions', json={'model': model, 'messages': messages,
+            'functions': functions, 'function_call': 'auto', 'max_tokens': available, 'temperature': 0.1})
+        message = data['choices'][0]['message']
+        call = message.get('function_call')
+        if call:
+            output = [{'type': 'function_call', 'call_id': uuid.uuid4().hex, 'name': call['name'],
+                'arguments': json.dumps(call['arguments'], ensure_ascii=False),
+                'functions_state_id': message.get('functions_state_id')}]
+        else:
+            output = [{'role': 'assistant', 'content': message.get('content') or ''}]
+        usage = data.get('usage') or {'total_tokens': estimate + available}
+        return {'output': output, 'usage': usage}
+
     def review(self, kit, draft, model, budget):
         # Keep findings across the entire contract where there is room for the full request.
         finding_budget = min(budget // 2, 10000)
@@ -80,10 +113,12 @@ class GigaChat:
             draft.limitations.extend(coverage_limits)
             draft.summary = 'См. результаты по отдельным правилам.'
             draft.limitations.append('Дополнительный обзор по всему договору недоступен. Проверьте результаты по правилам.')
+            add_missing_findings(draft, kit)
             return draft, used
         result.limitations.extend(coverage_limits)
         if draft.rule_checks:
             result.summary = 'Результаты сверки приведены по каждому правилу. Дополнительные замечания показаны отдельно.'
+        add_missing_findings(result, kit)
         return result, finding_tokens + used
 
     def review_findings(self, kit, draft, model, budget):
@@ -148,10 +183,7 @@ class GigaChat:
                 continue
             if (total['status'] == 'ok'
                 and contract_ref == total['observed'][0]['source']
-                and (basis_ref == total['limits'][0]['source']
-                     or (source['role'] == 'policy' and re.fullmatch(
-                         r'(?:\d+\.\s*)?общая стоимость договора должна соответствовать итоговой сумме спецификации\.\s*(?:при расхождении требуется исправление документов\.)?',
-                         basis_ref['quote'].strip(), re.I)))
+                and basis_ref == total['limits'][0]['source']
                 and item["category"] in {"нарушение", "на согласование"}):
                 draft.limitations.append("Замечание модели отклонено: итоговые суммы договора и спецификации совпадают.")
                 continue

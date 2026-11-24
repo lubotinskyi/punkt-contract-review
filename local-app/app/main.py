@@ -81,7 +81,7 @@ def create_app(data_dir=None,oauth_client=None):
 
     @app.get('/api/tasks/{id}')
     def task(id:str):
-        t=store.task(id);t.pop('history',None);t['approved']=store.approved(t);return t
+        t=store.task(id);t.pop('history',None);t.pop('validated_draft',None);t['approved']=store.approved(t);return t
 
     @app.post('/api/tasks')
     def start(body:StartReview):
@@ -113,8 +113,8 @@ def create_app(data_dir=None,oauth_client=None):
                     or task['request']['mode'] != 'gigachat' or not task.get('result')):
                 raise ValueError('Откройте прерванную проверку с сохранённым результатом')
             task['status'] = 'completed'
-            task['result']['summary'] = 'Юрист продолжил проверку по результатам локальных правил.'
-            task['result']['limitations'].append('Заключение GigaChat отсутствует. Требуется ручной анализ условий.')
+            task['result']['summary'] = 'Юрист продолжил проверку по сохранённым результатам.'
+            task['result']['limitations'].append('Автоматическая проверка не завершена. Требуется ручной анализ условий.')
             task['error'] = None
             task['approval'] = None
             task['revision'] += 1

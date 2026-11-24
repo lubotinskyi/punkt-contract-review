@@ -39,6 +39,9 @@ class Decisions(BaseModel):
     findings: list[Finding]
     lawyer_note: str = Field(default='', max_length=5000)
 
+DEFAULT_REVIEW_TOKENS = 96000
+
+
 class StartReview(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     contract_id: str
@@ -49,7 +52,7 @@ class StartReview(BaseModel):
     model: str = Field(default='', max_length=120)
     mode: Literal['gigachat', 'demo'] = 'gigachat'
     max_steps: int = Field(default=18, ge=2, le=40)
-    max_tokens: int = Field(default=65000, ge=5000, le=250000)
+    max_tokens: int = Field(default=DEFAULT_REVIEW_TOKENS, ge=5000, le=250000)
 
 class Revision(BaseModel):
     revision: int

@@ -181,7 +181,7 @@ def test_interrupted_gigachat_keeps_manual_draft(tmp_path):
     task = store.create(request)
 
     class Unavailable:
-        def review(self, *args):
+        def response(self, *args):
             raise ValueError('GigaChat временно недоступен')
 
     run_review(store, Unavailable(), task['id'])
@@ -226,12 +226,15 @@ def test_gigachat_ignores_equal_totals_and_keeps_missing_acceptance(setup, monke
         finding('Несоответствие общей стоимости спецификации', 'Общая стоимость:', 'Общая стоимость договора'),
         finding('Отсутствие порядка приёмки', 'Прочие условия', 'Договор должен содержать порядок приёмки'),
     ]}
+    total_finding = response['additional'][0]
+    total_finding.update(source=kit.spec['id'], basis=clause_id(kit.spec, 'Итого:'))
     client = GigaChat(store.root)
     monkeypatch.setattr(client, 'api', lambda *args, **kwargs: {
         'choices': [{'message': {'function_call': {'arguments': response}}}]
     })
     result, _ = client.review(kit, demo_result(kit), 'GigaChat-2', 65000)
-    assert [f.title for f in result.findings] == ['Отсутствие порядка приёмки']
+    assert [f.title for f in result.findings if f.category == 'нарушение'] == ['Отсутствие порядка приёмки']
+    assert any(f.category == 'нужны данные' for f in result.findings)
     assert any('суммы договора и спецификации совпадают' in line for line in result.limitations)
 
 def test_rule_coverage_marks_missing_batches_and_preserves_cited_discrepancy(setup):
@@ -284,3 +287,274 @@ def test_supplier_kit_across_formats(tmp_path, extension):
     if extension == 'pdf':
         delivery = next(f for f in result.findings if f.id == 'delivery')
         assert next(c['page'] for c in kit.contract['clauses'] if c['id'] == delivery.contract.clause_id) == 2
+
+def test_merged_docx_cells_are_one_column():
+    document = Document()
+    row = document.add_table(rows=1, cols=3).rows[0]
+    row.cells[0].merge(row.cells[1]).text = 'Итого'
+    row.cells[2].text = '400000'
+    stream = io.BytesIO()
+    document.save(stream)
+    assert parse_document('merged.docx', stream.getvalue(), 'contract')['text'] == 'Итого | 400000'
+
+def test_gigachat_tools_correction_and_human_gate(tmp_path, monkeypatch):
+    from app.documents import citation
+    from app.rule_checks import policy_rules
+
+    app = create_app(tmp_path)
+    store = app.state.store
+    request = fixture_docs(store)
+    request.update(mode='gigachat', model='test')
+    kit = Toolkit(store, request)
+    result = demo_result(kit).model_dump()
+    result['rule_checks'] = [dict(row.model_dump(), status='соответствует',
+        evidence=citation(kit.contract, kit.contract['clauses'][1])) for row in policy_rules(kit).values()]
+    result['rule_checks'] = [{'id': row['id'], 'status': row['status'], 'clause_id': row['evidence']['clause_id'],
+                              'explanation': 'Проверено по пункту договора.'} for row in result['rule_checks']]
+    sequence = iter([('finish_review', {'result': result}), ('check_numbers', {}),
+                     ('lookup_supplier', {}), ('validate_findings', {'result': {}}),
+                     ('validate_findings', {'result': result}), ('finish_review', {})])
+    feedback = []
+
+    def api(method, path, json):
+        name, arguments = next(sequence)
+        previous = json['messages'][-1]
+        if previous['role'] == 'function':
+            feedback.append(__import__('json').loads(previous['content']))
+            assert json['messages'][-2]['functions_state_id'] == 'state'
+        return {'choices': [{'message': {'functions_state_id': 'state',
+            'function_call': {'name': name, 'arguments': arguments}}}], 'usage': {'total_tokens': 80}}
+
+    monkeypatch.setattr(app.state.oauth, 'api', api)
+    task = store.create(request)
+    run_review(store, app.state.oauth, task['id'])
+    saved = store.task(task['id'])
+    assert saved['status'] == 'completed', saved['error']
+    assert saved['steps'] == 6 and saved['tokens'] == 480
+    assert feedback[0]['valid'] is False and feedback[3]['valid'] is False and feedback[4]['valid']
+    client = TestClient(app)
+    headers = {'X-CSRF-Token': client.get('/api/bootstrap').json()['csrf']}
+    path = '/api/tasks/' + task['id']
+    def post(action, body):
+        return client.post(path + '/' + action, headers=headers, json=body)
+    assert post('send-test', {'revision': 1}).status_code == 400
+    findings = saved['result']['findings']
+    for finding in findings:
+        finding['decision'] = 'accepted'
+    assert post('decisions', {'revision': 1, 'findings': findings}).status_code == 200
+    assert post('approve', {'revision': 2}).status_code == 200
+    findings[0]['decision'] = 'rejected'
+    assert post('decisions', {'revision': 2, 'findings': findings}).status_code == 200
+    assert post('send-test', {'revision': 3}).status_code == 400
+    assert post('approve', {'revision': 3}).status_code == 200
+    assert post('send-test', {'revision': 3}).status_code == 200
+
+def test_pdf_prefixed_clauses(monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    import app.documents as docs
+    page = SimpleNamespace(extract_text=lambda: 'Пункт 3.2. Товар передаётся\nчерез 30 дней.\nп. 4.1. Оплата\nпосле приёмки.')
+    monkeypatch.setattr(docs.pdfplumber, 'open', lambda _: nullcontext(SimpleNamespace(pages=[page])))
+    parsed = parse_document('wrapped.pdf', b'pdf', 'contract')
+    assert [(p['text'], p['page']) for p in parsed['clauses']] == [
+        ('Пункт 3.2. Товар передаётся через 30 дней.', 1), ('п. 4.1. Оплата после приёмки.', 1)]
+
+
+@pytest.mark.parametrize('reason', ['steps', 'budget', 'missing'])
+def test_gigachat_escalation_preserves_verifiable_findings(setup, reason):
+    store, request, kit = setup
+    request.update(mode='gigachat', model='test-model', max_steps=3)
+    names = iter(['check_numbers', 'lookup_supplier', 'finish_review'])
+    class Client:
+        def response(self, *args):
+            if reason == 'budget':
+                raise ValueError('Недостаточно бюджета токенов')
+            name = 'lookup_supplier' if reason == 'steps' else next(names)
+            arguments = {'result': demo_result(kit).model_dump()} if name == 'finish_review' else {}
+            return {'usage': {'total_tokens': 1}, 'output': [{'type': 'function_call', 'name': name,
+                'arguments': json.dumps(arguments), 'call_id': str(time.monotonic_ns())}]}
+    task = store.create(request)
+    run_review(store, Client(), task['id'])
+    saved = store.task(task['id'])
+    if reason == 'missing':
+        assert saved['status'] == 'completed'
+        assert any(f['category'] == 'нарушение' for f in saved['result']['findings'])
+        assert all(log['tool'] != 'escalation' for log in store.logs(task['id']))
+    else:
+        assert saved['status'] == 'interrupted'
+        assert store.logs(task['id'])[-1]['tool'] == 'escalation'
+    result = ReviewResult.model_validate(saved['result'])
+    assert validate_result(result, kit.docs, kit.contract)['valid']
+    missing = [f for f in result.findings if f.category == 'нужны данные']
+    assert missing and all(f.evidence[0].document_id == kit.policy['id'] for f in missing)
+    assert all('навигации' in f.explanation for f in missing)
+
+def test_missing_specification_overrides_claim_of_compliance(setup):
+    from app.agent import reconcile_rules
+    from app.rule_checks import policy_rules
+    from app.models import Citation
+    from app.documents import citation
+
+    store, request, _ = setup
+    kit = Toolkit(store, dict(request, specification_id=None))
+    rules = policy_rules(kit)
+    draft = demo_result(kit)
+    rule = next(r for r in rules.values() if 'спецификаци' in r.requirement.lower())
+    evidence = Citation(**citation(kit.contract, kit.contract['clauses'][1]))
+    result = draft.model_copy(deep=True)
+    result.rule_checks = [rule.model_copy(update={'status': 'соответствует', 'evidence': evidence})]
+    checked = reconcile_rules(result, kit, rules, draft)
+    finding = next(f for f in checked.findings if f.id == 'missing-' + rule.id)
+    assert finding.category == 'нужны данные' and finding.contract == evidence
+    assert finding.evidence == [rule.basis] and 'спецификация' in finding.explanation
+
+
+def test_confirmed_numbers_filter_only_the_exact_pair(setup):
+    from app.agent import reconcile_rules
+    from app.documents import citation
+    from app.models import Finding
+
+    store, request, _ = setup
+    text = (ROOT / 'examples/evaluation/case-02.txt').read_text(encoding='utf8')
+    text += '\n8. Для последней партии оплата переносится на следующий квартал.'
+    contract = store.put_document(parse_document('conditions.txt', text.encode(), 'contract'))
+    kit = Toolkit(store, dict(request, contract_id=contract['id']))
+    checks = kit.call('check_numbers', {})
+    assert {c['field'] for c in checks if c['status'] == 'ok'} == {'delivery','payment','advance','warranty','total'}
+    draft = demo_result(kit)
+    result = draft.model_copy(deep=True)
+    for check in checks:
+        result.findings.append(Finding(id=check['field'], title=check['label'], category='на согласование',
+            explanation='Модель отметила отклонение.', contract=check['observed'][0]['source'],
+            evidence=[check['limits'][0]['source']]))
+    payment = next(f for f in result.findings if f.id == 'payment')
+    result.findings.append(Finding(**dict(payment.model_dump(), id='exception',
+        contract=citation(contract, contract['clauses'][-1]))))
+    result.findings.append(Finding(**dict(payment.model_dump(), id='other-basis',
+        evidence=[citation(kit.template, kit.template['clauses'][1])])))
+    assert [f.id for f in reconcile_rules(result, kit, {}, draft).findings] == ['exception','other-basis']
+
+
+@pytest.mark.parametrize('invalid_input', ['missing', 'empty'])
+def test_gigachat_interrupts_on_unusable_required_input(setup, invalid_input):
+    store, request, kit = setup
+    if invalid_input == 'missing':
+        request['policy_id'] = 'unknown-document'
+    else:
+        empty = dict(kit.contract, id='empty-contract', text='', clauses=[], sha256='empty')
+        request['contract_id'] = store.put_document(empty)['id']
+    request.update(mode='gigachat', model='test')
+    task = store.create(request)
+    run_review(store, None, task['id'])
+    saved = store.task(task['id'])
+    assert saved['status'] == 'interrupted' and saved['steps'] == 0
+    assert 'документ' in saved['error'].lower()
+    assert store.logs(task['id'])[-1]['tool'] == 'escalation'
+
+def test_agent_replaces_mistyped_quotes_and_maps_generic_ids(setup):
+    _, _, kit = setup
+    payload = demo_result(kit).model_dump()
+    original = payload['findings'][0]['contract']['quote']
+    base = payload['findings'][0]
+    payload['findings'] = [dict(base, id=key, title='Отсутствие порядка приёмки')
+                           for key in ('f1', 'acceptance', 'finding-2')]
+    for item in payload['findings']:
+        item['contract'] = dict(item['contract'], quote='пересказ')
+        item['evidence'] = [dict(item['evidence'][0], quote='неточная цитата')]
+    args = {'result': payload}
+    assert kit.call('finish_review', args)['valid']
+    assert [f['id'] for f in args['result']['findings']] == ['acceptance-2','acceptance','acceptance-3']
+    assert args['result']['findings'][0]['contract']['quote'] == original
+    args['result']['findings'][0]['contract']['clause_id'] = 'unknown'
+    assert not kit.call('validate_findings', args)['valid']
+
+
+def test_third_failed_validation_saves_only_verifiable_findings(setup):
+    store, request, kit = setup
+    request.update(mode='gigachat', model='test')
+    draft = demo_result(kit).model_dump()
+    base = draft['findings'][0]
+    draft['findings'] = [dict(base, id='f1', title='Порядок приёмки', decision='accepted'),
+                         dict(base, id='invalid', contract=dict(base['contract'], clause_id='unknown'))]
+    calls = []
+    class Client:
+        def response(self, model, history, *args):
+            calls.append(1)
+            if len(calls) == 3:
+                assert 'contract.document_id' in json.loads(history[-1]['output'])['errors'][-1]
+            assert len(calls) <= 3
+            return {'output':[{'type':'function_call','call_id':str(len(calls)), 'name':'validate_findings',
+                               'arguments':json.dumps({'result':draft})}],'usage':{'total_tokens':10}}
+    task = store.create(request)
+    run_review(store, Client(), task['id'])
+    saved = store.task(task['id'])
+    assert len(calls) == 3 and saved['status'] == 'interrupted'
+    result = ReviewResult.model_validate(saved['result'])
+    assert any(f.id == 'acceptance' and f.decision == 'pending' for f in result.findings)
+    assert all(f.id != 'invalid' for f in result.findings)
+    assert validate_result(result, kit.docs, kit.contract)['valid']
+
+
+def test_open_rule_does_not_duplicate_a_model_finding(setup):
+    from app.agent import reconcile_rules
+    from app.rule_checks import policy_rules
+    from app.models import Citation, Finding
+    from app.documents import citation
+
+    _, _, kit = setup
+    rules = policy_rules(kit)
+    rule = next(row for row in rules.values() if row.id.endswith('-quality'))
+    clause = Citation(**citation(kit.contract, kit.contract['clauses'][-1]))
+    draft = demo_result(kit)
+    review = draft.model_copy(deep=True)
+    review.rule_checks = [rule.model_copy(update={'status':'недостаточно данных','evidence':clause})]
+    review.findings.append(Finding(id='acceptance', title='Уточнить порядок приёмки',
+        category='нужны данные', contract=clause, evidence=[rule.basis], explanation='Уточнить порядок проверки качества.'))
+    for _ in range(2):
+        review = reconcile_rules(review, kit, rules, draft)
+        assert 'acceptance' in {f.id for f in review.findings}
+        assert 'missing-' + rule.id not in {f.id for f in review.findings}
+        assert next(r for r in review.rule_checks if r.id == rule.id).status == 'недостаточно данных'
+
+
+def test_delivery_exception_with_parenthetical_qualifier(setup):
+    from app.documents import delivery_exceptions
+
+    _, _, kit = setup
+    text = ('Передача (пусконаладочного комплекта) допускается на сорок второй '
+            'календарный день с даты подписания договора.')
+    contract = parse_document('exception.txt', text.encode(), 'contract')
+    [(source, day, limit)] = delivery_exceptions(contract, kit.policy)
+    assert source['quote'] == text and day == 42 and limit['value'] == '30'
+
+    separate = parse_document('exception.txt', text.replace(') допускается', '). Допускается').encode(), 'contract')
+    assert delivery_exceptions(separate, kit.policy) == []
+
+
+def test_shifted_rule_citation_preserves_other_rules(setup):
+    from app.agent import reconcile_rules
+    from app.documents import citation
+    from app.models import Citation
+    from app.rule_checks import policy_rules
+
+    store, request, _ = setup
+    text = (ROOT / 'examples/evaluation/case-02.txt').read_text(encoding='utf8')
+    contract = store.put_document(parse_document('normal.txt', text.encode(), 'contract'))
+    kit = Toolkit(store, dict(request, contract_id=contract['id']))
+    rules = policy_rules(kit)
+    delivery = next(r for r in rules.values() if 'Срок поставки' in r.requirement)
+    payment = next(r for r in rules.values() if 'Срок оплаты' in r.requirement)
+    payment_clause = next(c for c in contract['clauses'] if 'Срок оплаты' in c['text'])
+    reference = Citation(**citation(contract, payment_clause))
+    draft = demo_result(kit)
+    result = draft.model_copy(deep=True)
+    result.rule_checks = [
+        delivery.model_copy(update={'status': 'соответствует', 'evidence': reference, 'explanation': 'Чужой вывод'}),
+        payment.model_copy(update={'status': 'соответствует', 'evidence': reference, 'explanation': 'Срок оплаты соблюдён'})
+    ]
+    checked = reconcile_rules(result, kit, rules, draft)
+    rows = {r.id: r for r in checked.rule_checks}
+    assert rows[delivery.id].status == 'не проверено'
+    assert rows[delivery.id].evidence is None
+    assert 'Чужой вывод' not in rows[delivery.id].explanation
+    assert rows[payment.id].evidence == reference and rows[payment.id].status == 'соответствует'
