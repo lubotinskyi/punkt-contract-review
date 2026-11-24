@@ -1,5 +1,5 @@
 const $=id=>document.getElementById(id);
-let csrf='',documents=[],current=null,taskDocs={},poll=null,dirty=false;
+let csrf='',documents=[],current=null,taskDocs={},poll=null,dirty=false,matrixDrafts=false;
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function notify(text){$('notice').textContent=text;}
 async function api(url,options={}){const r=await fetch(url,{...options,headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),'X-CSRF-Token':csrf,...options.headers}});if(!r.ok){let e;try{e=await r.json();}catch{e={detail:'Ошибка приложения: '+r.status};}throw new Error(typeof e.detail==='string'?e.detail:JSON.stringify(e.detail));}return r.json();}
@@ -27,7 +27,7 @@ $('reviewform').onsubmit=handle(async e=>{e.preventDefault();for(const role of [
 const statusNames={queued:'В очереди',running:'Проверка идёт',completed:'Готово к проверке юристом',interrupted:'Нужна проверка или продолжение',failed:'Ошибка'};
 async function loadTasks(){const tasks=await api('/api/tasks');$('tasklist').replaceChildren();if(!tasks.length)$('tasklist').append(el('p','Пока нет проверок.'));for(const t of tasks){const row=el('div',undefined,'taskrow');const content=el('div');content.append(el('strong',t.request.title),el('div',new Date(t.created).toLocaleString('ru-RU')+' / '+statusNames[t.status],'small'));const button=el('button','Открыть','quiet');button.onclick=handle(()=>openTask(t.id));row.append(content,button);$('tasklist').append(row);}}
 $('refresh').onclick=handle(loadTasks);
-async function openTask(id,force=false){if(dirty&&!force&&!confirm('Отменить несохранённые правки?'))return;clearTimeout(poll);const changed=current?.id!==id;current=await api('/api/tasks/'+id);if(changed){showReviewTab('findings');$('decision-filter').value='all';$('logs').replaceChildren();$('count-logs').textContent='…';$('supplier-status').textContent='ИНН · ожидает проверки';}taskDocs={};for(const key of ['contract_id','template_id','policy_id','specification_id','supplier_id'])if(current.request[key]){const d=await api('/api/documents/'+current.request[key]);taskDocs[d.id]=d;}dirty=false;renderTask();await loadLogs();if(['queued','running'].includes(current.status))schedulePoll(id);return true;}
+async function openTask(id,force=false){if(dirty&&!force&&!confirm('Отменить несохранённые правки?'))return;clearTimeout(poll);const changed=current?.id!==id;current=await api('/api/tasks/'+id);if(changed){showReviewTab('findings');$('decision-filter').value='all';$('logs').replaceChildren();$('count-logs').textContent='…';$('supplier-status').textContent='ИНН · ожидает проверки';}taskDocs={};for(const key of ['contract_id','template_id','policy_id','specification_id','supplier_id'])if(current.request[key]){const d=await api('/api/documents/'+current.request[key]);taskDocs[d.id]=d;}dirty=false;matrixDrafts=addMatrixDrafts();renderTask();await loadLogs();if(['queued','running'].includes(current.status))schedulePoll(id);return true;}
 function schedulePoll(id){
  poll=setTimeout(async()=>{
   try {await openTask(id,true);}
@@ -137,6 +137,44 @@ function showSource(documentInfo,ref,trigger){
  dialog.onclose=()=>{dialog.remove();trigger.focus();};
  document.body.append(dialog);dialog.showModal();chosen?.scrollIntoView({block:'center'});
 }
+// Legacy reports can hold rule discrepancies without corresponding protocol findings.
+function addMatrixDrafts(){
+ const result=current.result;
+ if(current.status!=='completed'||current.approved||!result)return false;
+ const contract=taskDocs[current.request.contract_id];
+ const subject=text=>(text||'').replace(/^\s*\d+(?:\.\d+)*[.)]\s*/, '').match(
+  /^(срок поставки|срок оплаты|предоплата|гарантия|общая стоимость|(?:порядок )?при[её]мк[аи])(?=[:.\s]|$)/i
+ )?.[0].toLocaleLowerCase('ru').replace(/^(порядок )?при[её]мк[аи]$/, 'приёмка');
+ let added=false;
+ for(const rule of result.rule_checks||[]){
+  if(rule.status!=='расхождение'||result.findings.length>=200)continue;
+  const id='matrix-'+rule.id;
+  const basis=rule.basis;
+  const citation=rule.evidence;
+  const target=subject(rule.requirement);
+  const original=citation?.document_id===contract.id&&contract.clauses.find(c=>c.id===citation.clause_id);
+  const conflicts=Boolean(target&&original&&subject(original.text)&&subject(original.text)!==target);
+  const alternatives=conflicts||!original?contract.clauses.filter(c=>target&&subject(c.text)===target):[];
+  const clause=alternatives.length===1?alternatives[0]:!conflicts?original:null;
+  if(!clause||clause.text.trim().length<3||!basis||
+     !taskDocs[basis.document_id]?.clauses.some(c=>c.id===basis.clause_id&&c.text.includes(basis.quote)))continue;
+  const exists=result.findings.some(f=>f.id===id||
+   (f.contract.clause_id===clause.id&&f.evidence.some(ref=>ref.document_id===basis.document_id&&ref.clause_id===basis.clause_id)));
+  if(exists)continue;
+  const corrected=clause!==original;
+  result.findings.push({
+   id,title:('Расхождение по правилу · '+rule.requirement.replace(/^\s*\d+(?:\.\d+)*[.)]\s*/, '')).slice(0,240),
+   category:corrected?'нужны данные':'нарушение',
+   explanation:corrected?'В матрице указан неверный пункт договора. Сверьте найденный пункт с положением перед включением в протокол.':
+    ('По матрице выявлено расхождение. '+(rule.explanation||'Сверьте условия в приведённых цитатах.')).slice(0,4000),
+   contract:{document_id:contract.id,clause_id:clause.id,quote:clause.text.slice(0,4000)},
+   evidence:[basis],suggestion:'',decision:'pending'
+  });
+  added=true;
+ }
+ return added;
+}
+
 function renderTask(){
  $('review').classList.remove('hidden');$('reviewtitle').textContent=current.request.title;$('reviewbadge').textContent=current.request.mode==='demo'?'Правила':current.request.mode==='gigachat'?(current.request.model||'GigaChat'):'АРХИВ / CHATGPT';
  $('review-filename').textContent=taskDocs[current.request.contract_id].name;
@@ -159,7 +197,7 @@ function renderTask(){
  updateDecisionBar();approvalUI();
 }
 function markDirty(){updateDecisionBar();dirty=true;current.approved=false;approvalUI();}
-function approvalUI(){for(const [id,format] of [['docx','docx'],['json','json']]){const a=$(id);a.classList.toggle('disabled',!current.approved);if(current.approved)a.href='/api/tasks/'+current.id+'/export/'+format;else a.removeAttribute('href');}$('send').disabled=!current.approved;$('approvalstatus').textContent=current.approved?'✅ Версия утверждена':'🔒 Экспорт и отправка заблокированы до утверждения юристом'+(dirty?' · Есть несохранённые правки':'');}
+function approvalUI(){for(const [id,format] of [['docx','docx'],['json','json']]){const a=$(id);a.classList.toggle('disabled',!current.approved);if(current.approved)a.href='/api/tasks/'+current.id+'/export/'+format;else a.removeAttribute('href');}$('send').disabled=!current.approved;$('approvalstatus').textContent=current.approved?'✅ Версия утверждена':'🔒 Экспорт и отправка заблокированы до утверждения юристом'+(dirty?' · Есть несохранённые правки':matrixDrafts?' · Сохраните черновики из матрицы перед утверждением':'');}
 function highlight(id){document.querySelectorAll('.clause').forEach(p=>p.classList.toggle('selected',p.id==='clause-'+id));const n=$('clause-'+id);if(n){n.tabIndex=-1;n.focus({preventScroll:true});n.scrollIntoView({block:'center',behavior:reviewMotion()});}}
 function editField(box,label,value,update,multiline=false){const wrap=el('label',label);const input=el(multiline?'textarea':'input');input.value=value;if(multiline)input.rows=3;input.oninput=()=>{update(input.value);markDirty();};wrap.append(input);box.append(wrap);return input;}
 function paragraphName(text){const n=(text||'').match(/^\s*(?:(?:§|п(?:ункт)?\.?)\s*)?(\d+(?:\.\d+)*)(?:[.)]|\s+(?=\S))/i);return n?'§ '+n[1]:'Фрагмент';}
@@ -215,7 +253,7 @@ function renderFindings(){$('findings').replaceChildren();current.result.finding
 $('lawyer_note').oninput=()=>{if(current)markDirty();};
 $('addfinding').onclick=()=>{const p=taskDocs[current.request.contract_id].clauses[0];current.result.findings.push({id:crypto.randomUUID(),title:'Замечание юриста',category:'нужны данные',explanation:'Требуется дополнительная проверка.',contract:{document_id:current.request.contract_id,clause_id:p.id,quote:p.text},evidence:[],suggestion:'',decision:'pending'});markDirty();renderFindings();};
 $('save').onclick=handle(async()=>{await post('/api/tasks/'+current.id+'/decisions',{revision:current.revision,findings:current.result.findings,lawyer_note:$('lawyer_note').value});dirty=false;await openTask(current.id,true);notify('Правки сохранены. Предыдущее одобрение сброшено.');});
-$('approve').onclick=handle(async()=>{if(dirty)throw new Error('Сначала сохраните правки');if(!confirm('Подтверждаете точную версию протокола и ознакомление с ограничениями проверки?'))return;await post('/api/tasks/'+current.id+'/approve',{revision:current.revision});await openTask(current.id,true);notify('Версия протокола подтверждена.');});
+$('approve').onclick=handle(async()=>{if(dirty||matrixDrafts)throw new Error('Сначала сохраните правки и замечания из матрицы');if(!confirm('Подтверждаете точную версию протокола и ознакомление с ограничениями проверки?'))return;await post('/api/tasks/'+current.id+'/approve',{revision:current.revision});await openTask(current.id,true);notify('Версия протокола подтверждена.');});
 $('send').onclick=handle(async()=>{const result=await post('/api/tasks/'+current.id+'/send-test',{revision:current.revision});notify('Сохранено в локальный тестовый ящик. Реальное письмо не отправлялось. Номер: '+result.id.slice(0,12));});
 $('resume').onclick=handle(async()=>{await post('/api/tasks/'+current.id+'/resume');await openTask(current.id,true);});
 async function loadLogs(){
@@ -262,7 +300,23 @@ function updateDecisionBar() {
  }
  renderReviewOverview(findings);
  $('empty-findings').hidden = visible > 0 || current?.status !== 'completed';
- $('empty-findings').textContent = findings.length ? 'Для выбранного фильтра замечаний нет.' : 'Замечаний по выполненным проверкам нет.';
+ $('empty-findings').textContent = findings.length ? 'Для выбранного фильтра замечаний нет.' : 'В протоколе пока нет замечаний.';
+ const mismatches = (current?.result?.rule_checks || []).filter(rule => rule.status === 'расхождение');
+ const alertId = 'matrix-discrepancies';
+ $(alertId)?.remove();
+ if(mismatches.length){
+  const alert = el('p', 'Расхождений в матрице правил: ' + mismatches.length + '. ', 'matrix-discrepancies');
+  alert.id = alertId;
+  const link = el('button', 'Открыть матрицу правил ↗', 'source-link');
+  link.type = 'button';
+  link.onclick = () => {
+   showReviewTab('rules');
+   $('tab-rules').focus();
+   $('rule-checks').querySelector('[data-tone="red"]')?.scrollIntoView({block:'nearest',behavior:reviewMotion()});
+  };
+  alert.append(link);
+  $('decision-filter').closest('label').before(alert);
+ }
 }
 $('decision-filter').onchange = updateDecisionBar;
 document.querySelectorAll('a[href="#app-area"]:not(#header-history)').forEach(link => {

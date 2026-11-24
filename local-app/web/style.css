@@ -184,3 +184,6 @@ body,button,.button,input,select,textarea,.folio-brand,.folio-nav nav,.folio-bot
  #review .finding .comparison{grid-template-columns:minmax(0,1fr)}
  #rule-checks table{min-width:460px}
 }
+
+#review .matrix-discrepancies{margin:12px 0 0;padding:8px 12px;background:#fae7e7;color:#862a32;border-radius:10px}
+#review .matrix-discrepancies .source-link{color:inherit}
